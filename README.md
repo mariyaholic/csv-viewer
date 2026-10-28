@@ -58,7 +58,7 @@ cargo test --workspace
 Type-check the Windows-only module on a non-Windows host (no link, no run):
 
 ```sh
-cargo check -p csv-preview --features windows-check
+RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview
 ```
 
 ## Use

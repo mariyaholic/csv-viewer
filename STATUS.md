@@ -54,13 +54,12 @@ cargo build --release --workspace
 Result: `Finished release profile` — success.
 
 ```sh
-cargo check -p csv-preview --features windows-check
+RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview
 ```
 
 Result: success. This **type-checks** the Windows-only module on Linux; it does
-not link, run or validate Win32/COM behaviour. `cargo test -p csv-preview
---features windows-check` is expected to fail at link time on Linux because the
-Win32 libraries are absent; use the check command above.
+not link, run or validate Win32/COM behaviour. The default `cargo test
+--workspace` does not include the Windows module, so it links normally.
 
 Manual smoke check:
 
@@ -109,8 +108,8 @@ None of these have been run here. The full checklist is in `TESTING.md`:
 
 ## Open issues and caveats
 
-1. **Windows layer is unverified.** The `windows-check` feature compiles the
-   module on Linux, but no Windows target/toolchain is installed and no COM
+1. **Windows layer is unverified.** The `csvview_windows_check` cfg type-checks
+   the module on Linux, but no Windows target/toolchain is installed and no COM
    registration or Explorer host has been exercised. Treat the DLL as
    development code until `TESTING.md` passes.
 2. **Stream apartment lifetime.** `StreamReader` is moved to the spool thread.

@@ -11,10 +11,6 @@ description = "Bounded preview session and Windows Explorer preview handler"
 name = "csv_preview"
 crate-type = ["rlib", "cdylib"]
 
-[features]
-# Type-check the Windows-only module on a non-Windows host (no link/run).
-windows-check = []
-
 [dependencies]
 csvview-core = { path = "../csv-core" }
 csv-protocol = { path = "../csv-protocol" }

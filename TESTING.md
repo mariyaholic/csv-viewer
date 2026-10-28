@@ -6,13 +6,13 @@ Made by Maria. Apache-2.0.
 
 Last run 2026-10-28: `cargo test --workspace` → **112 passed, 0 failed,
 0 ignored**; `cargo build --workspace` and `cargo build --release --workspace`
-succeeded; `cargo check -p csv-preview --features windows-check` succeeded
+succeeded; `RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview` succeeded
 (type-check only).
 
 ```sh
 cargo build --workspace
 cargo test --workspace
-cargo check -p csv-preview --features windows-check
+RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview
 ```
 
 Expected coverage:
@@ -122,5 +122,5 @@ release:
 
 - Win32 registry calls, COM vtables, GDI drawing, window messages, Explorer
   hosting and any MSIX/installer behaviour.
-- The `windows-check` feature only type-checks the Windows module on Linux; it
-  does not link or execute it.
+- The `csvview_windows_check` cfg only type-checks the Windows module on Linux;
+  it does not link or execute it.

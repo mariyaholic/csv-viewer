@@ -5,7 +5,7 @@
 pub mod backend;
 pub mod registration;
 pub mod session;
-#[cfg(any(windows, feature = "windows-check"))]
+#[cfg(any(windows, csvview_windows_check))]
 pub mod windows;
 
 pub use backend::{worker_beside_test_executable, WorkerBackend};
