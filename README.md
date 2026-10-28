@@ -117,7 +117,9 @@ The DLL/worker, registry plan and COM implementation live in
 and real Explorer testing; see [testing](docs/TESTING.md) and
 [status](STATUS.md). Registration is opt-in, warns before changing a
 preview association, and unregisters only values that still point to this
-handler. Empty registry keys can remain after unregistration; see the testing
+handler. Shared registry keys are never deleted; empty keys are expected residue.
+The handler’s exclusive CLSID tree could be deleted safely, but is also left in
+place. See the testing
 notes before distributing the handler.
 
 See [ROADMAP.md](ROADMAP.md) for deliberately deferred work and

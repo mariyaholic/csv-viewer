@@ -87,12 +87,11 @@ The following must be exercised on a real Windows PC before release:
      the per-user `PreviewHandlers` value.
    - Install over a different existing CSV preview handler: registration must
      refuse (the installer must show the warning and ask first).
-   - Unregister: only values still pointing at this handler are removed; a
-     handler installed later must survive. Candidate keys are removed bottom-up
-     only when they have no values or subkeys; verify foreign content survives.
-     The empty check and deletion are separate calls and can race concurrent
-     writers; deletion ownership is not persisted. Test rollback on failed
-     writes, including prior values and concurrent changes.
+   - Unregister removes only values still matching this handler; a handler
+     installed later and foreign values must survive. Shared keys are never
+     deleted, so empty keys are expected residue. The exclusive CLSID tree
+     could be deleted, but is also left in place. Test rollback on failed
+     writes, including prior values and concurrent changes; shared keys remain.
    - Test upgrade in place and uninstall; confirm Explorer restores the prior
      handler when safe.
    - Test optional MSIX registration and the standalone fallback if preview

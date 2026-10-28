@@ -95,6 +95,9 @@ BSL-1.0).
 
 The inventory above was checked against Cargo.lock and cargo-deny 0.20.2
 using the full graph and Linux/Windows target filters. All license checks passed.
+The current `cargo deny --offline check licenses` full-graph run passed with
+three warnings for unused CC0-1.0, ISC and Zlib allowances; its raw output is
+saved in the round handoff scratch directory. No dependencies changed.
 No CC0 crate or ICU crate was encountered. The package/version/license list above
 is the metadata inventory; cargo-deny verifies SPDX expressions against deny.toml.
 The data notices below were verified against the cached crate license files.

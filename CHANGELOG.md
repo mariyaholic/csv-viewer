@@ -5,7 +5,7 @@ All notable changes are recorded here in the style of Keep a Changelog.
 ## [0.1.0] - Unreleased
 
 - Add a read-only CSV viewer, parser, isolated worker and Windows preview handler.
-- Remove empty registry keys bottom-up on unregister while preserving foreign content.
+- Keep shared registry keys on unregister and rollback; empty keys are expected residue.
 - Show scan coverage and source-text warnings; support explicit full scans.
 
 - Copy Explorer streams on the COM caller before handing a bounded file to the spool thread.
