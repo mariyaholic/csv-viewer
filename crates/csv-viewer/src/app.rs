@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use csvview_core::{
-    scan_file, ScanLimits, ScanReport, ScanRequest, TableModel,
-};
+use csvview_core::{scan_file, ScanLimits, ScanReport, ScanRequest, TableModel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {

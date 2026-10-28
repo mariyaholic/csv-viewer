@@ -11,6 +11,9 @@
 pub const CLSID_CSV_PREVIEW: &str = "{8f6a0f5e-3c4b-4a2e-9d7f-5b1c2e3a4f60}";
 pub const PREVIEW_HANDLER_CATEGORY: &str = "{8895b1c6-b41f-4c1c-a562-0d564250836f}";
 pub const CLSID_DESCRIPTION: &str = "CSV viewer and preview";
+pub const PREVHOST_APPID: &str = "{6d2b5079-2f0b-48dd-ab7f-97cec514d30b}";
+pub const PREVIEW_HANDLERS_KEY: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\PreviewHandlers";
 pub const THREADING_MODEL: &str = "Apartment";
 
 pub const REGISTRATION_WARNING: &str =
@@ -30,7 +33,7 @@ pub enum ExpectedValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryValue {
-    /// Key path relative to `HKCU\Software\Classes`.
+    /// Key path relative to `HKCU\Software\Classes`, except PreviewHandlers.
     pub key: String,
     /// `None` means the default value.
     pub name: Option<&'static str>,
@@ -46,7 +49,27 @@ impl RegistryValue {
 }
 
 pub fn register_plan(module_path: &str) -> Vec<RegistryValue> {
+    // Microsoft, "How to register a preview handler": AppID selects the
+    // 64-bit prevhost surrogate and PreviewHandlers names the handler.
     vec![
+        RegistryValue {
+            key: format!("CLSID\\{CLSID_CSV_PREVIEW}"),
+            name: Some("AppID"),
+            value: PREVHOST_APPID.to_string(),
+            expected: ExpectedValue::Static(PREVHOST_APPID),
+        },
+        RegistryValue {
+            key: format!("CLSID\\{CLSID_CSV_PREVIEW}"),
+            name: Some("DisplayName"),
+            value: CLSID_DESCRIPTION.to_string(),
+            expected: ExpectedValue::Static(CLSID_DESCRIPTION),
+        },
+        RegistryValue {
+            key: PREVIEW_HANDLERS_KEY.to_string(),
+            name: Some(CLSID_CSV_PREVIEW),
+            value: CLSID_DESCRIPTION.to_string(),
+            expected: ExpectedValue::Static(CLSID_DESCRIPTION),
+        },
         RegistryValue {
             key: format!("CLSID\\{CLSID_CSV_PREVIEW}"),
             name: None,
@@ -80,19 +103,6 @@ pub fn register_plan(module_path: &str) -> Vec<RegistryValue> {
     ]
 }
 
-/// Keys to remove after values are deleted. Deepest first. Parent keys that
-/// may contain unrelated values (such as `.csv`) are never removed.
-pub fn unregister_keys() -> Vec<String> {
-    vec![
-        format!("CLSID\\{CLSID_CSV_PREVIEW}\\InprocServer32"),
-        format!("CLSID\\{CLSID_CSV_PREVIEW}"),
-        format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
-        format!(".csv\\ShellEx"),
-        format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
-        format!("SystemFileAssociations\\.csv\\ShellEx"),
-    ]
-}
-
 /// Keys that must be inspected for an existing preview handler before an
 /// opt-in registration is allowed to proceed.
 pub fn association_keys() -> Vec<String> {
@@ -110,24 +120,26 @@ mod tests {
     #[test]
     fn plan_registers_the_clsid_and_csv_associations() {
         let plan = register_plan(r"C:\Program Files\CSV Viewer\csv-preview.dll");
-        assert!(plan.iter().any(|entry| entry.key.ends_with("InprocServer32")
-            && entry.value.ends_with("csv-preview.dll")));
-        assert!(plan.iter().any(|entry| entry.name == Some("ThreadingModel")
-            && entry.value == "Apartment"));
+        assert!(plan
+            .iter()
+            .any(|entry| entry.key.ends_with("InprocServer32")
+                && entry.value.ends_with("csv-preview.dll")));
+        assert!(plan
+            .iter()
+            .any(|entry| entry.name == Some("ThreadingModel") && entry.value == "Apartment"));
+        assert!(plan
+            .iter()
+            .any(|entry| entry.name == Some("AppID") && entry.value == PREVHOST_APPID));
+        assert!(plan.iter().any(
+            |entry| entry.key == PREVIEW_HANDLERS_KEY && entry.name == Some(CLSID_CSV_PREVIEW)
+        ));
+        assert!(plan
+            .iter()
+            .any(|entry| entry.name == Some("DisplayName") && entry.value == CLSID_DESCRIPTION));
         assert_eq!(association_keys().len(), 2);
-        assert!(association_keys()
-            .iter()
-            .all(|key| key.starts_with(".csv\\ShellEx") || key.starts_with("SystemFileAssociations")));
-    }
-
-    #[test]
-    fn unregistration_is_scoped_to_our_keys() {
-        let keys = unregister_keys();
-        assert!(keys.iter().any(|key| key.contains(CLSID_CSV_PREVIEW)));
-        assert!(!keys.iter().any(|key| key == ".csv"), "must not delete the .csv key");
-        assert!(keys
-            .iter()
-            .all(|key| !key.starts_with("SystemFileAssociations\\.csv\\ShellEx\\{") || key.contains(PREVIEW_HANDLER_CATEGORY)));
+        assert!(association_keys().iter().all(
+            |key| key.starts_with(".csv\\ShellEx") || key.starts_with("SystemFileAssociations")
+        ));
     }
 
     #[test]

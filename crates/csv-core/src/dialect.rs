@@ -95,12 +95,18 @@ pub fn detect(text: &str) -> DialectDetection {
         };
         if let Some((score, confidence)) = score_dialect(text, &dialect) {
             let adjusted = score + delimiter_bonus(text, *delimiter);
-            let candidate = (adjusted, index, DialectDetection { dialect, confidence });
+            let candidate = (
+                adjusted,
+                index,
+                DialectDetection {
+                    dialect,
+                    confidence,
+                },
+            );
             if best
                 .as_ref()
                 .map(|(best_score, best_index, _)| {
-                    adjusted > *best_score
-                        || (adjusted == *best_score && index < *best_index)
+                    adjusted > *best_score || (adjusted == *best_score && index < *best_index)
                 })
                 .unwrap_or(true)
             {
@@ -151,14 +157,15 @@ fn score_dialect(text: &str, dialect: &Dialect) -> Option<(f64, u8)> {
 /// override the dialect.
 fn delimiter_bonus(text: &str, delimiter: char) -> f64 {
     if delimiter == ';' || delimiter == '\t' {
-        let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).take(50).collect();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(50)
+            .collect();
         if lines.is_empty() {
             return 0.0;
         }
-        let with_delimiter = lines
-            .iter()
-            .filter(|line| line.contains(delimiter))
-            .count();
+        let with_delimiter = lines.iter().filter(|line| line.contains(delimiter)).count();
         if with_delimiter * 10 < lines.len() * 8 {
             return 0.0;
         }
@@ -219,14 +226,10 @@ pub fn detect_header(rows: &[Vec<String>]) -> bool {
         return false;
     }
     let first = &rows[0];
-    if first.len() < 2
-        || first.iter().any(|cell| cell.trim().is_empty())
-        || first.len() > 4096
-    {
+    if first.len() < 2 || first.iter().any(|cell| cell.trim().is_empty()) || first.len() > 4096 {
         return false;
     }
-    let unique: std::collections::BTreeSet<&str> =
-        first.iter().map(|cell| cell.trim()).collect();
+    let unique: std::collections::BTreeSet<&str> = first.iter().map(|cell| cell.trim()).collect();
     if unique.len() != first.len() {
         return false;
     }
@@ -251,8 +254,8 @@ pub fn detect_header(rows: &[Vec<String>]) -> bool {
         }
         kinds.sort_by_key(|kind| *kind as u8);
         let modal = kinds[kinds.len() / 2];
-        let differs = modal != label_kind
-            && !(modal == CellKind::Text && label_kind == CellKind::Text);
+        let differs =
+            modal != label_kind && !(modal == CellKind::Text && label_kind == CellKind::Text);
         if differs {
             typed_difference += 1;
         }
@@ -301,10 +304,7 @@ mod tests {
         ];
         assert!(!detect_header(&rows));
 
-        let rows = vec![
-            vec!["1".into(), "2".into()],
-            vec!["3".into(), "4".into()],
-        ];
+        let rows = vec![vec!["1".into(), "2".into()], vec!["3".into(), "4".into()]];
         assert!(!detect_header(&rows));
     }
 

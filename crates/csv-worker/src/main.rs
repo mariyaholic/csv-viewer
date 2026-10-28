@@ -59,7 +59,8 @@ impl Config {
                     );
                 }
                 "--max-frame-bytes" => {
-                    config.max_frame_bytes = parse_number(&mut arguments, "--max-frame-bytes")? as usize;
+                    config.max_frame_bytes =
+                        parse_number(&mut arguments, "--max-frame-bytes")? as usize;
                 }
                 "--max-spool-bytes" => {
                     config.max_spool_bytes = parse_number(&mut arguments, "--max-spool-bytes")?;
@@ -211,20 +212,18 @@ fn run(config: Config) -> Result<(), String> {
     let (sender, receiver) = std::sync::mpsc::channel::<Result<ClientMessage, FrameError>>();
     let reader_config = config.clone();
     let reader_control = control.clone();
-    let _reader = thread::spawn(move || {
-        loop {
-            match read_message::<_, ClientMessage>(&mut input, reader_config.max_frame_bytes) {
-                Ok(ClientMessage::Cancel { id }) => reader_control.cancel(id),
-                Ok(message) => {
-                    if sender.send(Ok(message)).is_err() {
-                        break;
-                    }
-                }
-                Err(FrameError::Closed) => break,
-                Err(error) => {
-                    let _ = sender.send(Err(error));
+    let _reader = thread::spawn(move || loop {
+        match read_message::<_, ClientMessage>(&mut input, reader_config.max_frame_bytes) {
+            Ok(ClientMessage::Cancel { id }) => reader_control.cancel(id),
+            Ok(message) => {
+                if sender.send(Ok(message)).is_err() {
                     break;
                 }
+            }
+            Err(FrameError::Closed) => break,
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                break;
             }
         }
     });
@@ -270,7 +269,13 @@ fn run(config: Config) -> Result<(), String> {
             }
             Ok(ClientMessage::Cancel { id }) => control.cancel(id),
             Err(error) => {
-                send_error(&mut output, None, ErrorCode::Io, error.to_string(), config.max_frame_bytes);
+                send_error(
+                    &mut output,
+                    None,
+                    ErrorCode::Io,
+                    error.to_string(),
+                    config.max_frame_bytes,
+                );
                 break;
             }
         }
@@ -361,11 +366,23 @@ fn perform_scan(
             Ok(())
         }
         Err(ScanError::InvalidRequest(message)) => {
-            send_error(output, Some(id), ErrorCode::BadRequest, message, config.max_frame_bytes);
+            send_error(
+                output,
+                Some(id),
+                ErrorCode::BadRequest,
+                message,
+                config.max_frame_bytes,
+            );
             Err(WorkerError::Reported)
         }
         Err(ScanError::Io(message)) => {
-            send_error(output, Some(id), ErrorCode::Io, message, config.max_frame_bytes);
+            send_error(
+                output,
+                Some(id),
+                ErrorCode::Io,
+                message,
+                config.max_frame_bytes,
+            );
             Err(WorkerError::Reported)
         }
     }
@@ -458,11 +475,7 @@ fn send_error(
 ) {
     let _ = write_message(
         output,
-        &WorkerMessage::Error {
-            id,
-            code,
-            message,
-        },
+        &WorkerMessage::Error { id, code, message },
         max_frame_bytes,
     );
 }
@@ -577,7 +590,10 @@ mod tests {
         assert!(control.flag.load(Ordering::SeqCst));
         control.end();
         control.begin(1);
-        assert!(control.flag.load(Ordering::SeqCst), "pending cancel is kept");
+        assert!(
+            control.flag.load(Ordering::SeqCst),
+            "pending cancel is kept"
+        );
         control.end();
         control.begin(1);
         assert!(!control.flag.load(Ordering::SeqCst));

@@ -191,20 +191,17 @@ impl WarningCollector {
             }
             return;
         }
-        let entry = self
-            .entries
-            .entry(key)
-            .or_insert_with(|| Warning {
-                code,
-                severity: code.severity(),
-                column,
-                column_name: None,
-                occurrences: 0,
-                message: message
-                    .clone()
-                    .unwrap_or_else(|| code.message().to_string()),
-                samples: Vec::new(),
-            });
+        let entry = self.entries.entry(key).or_insert_with(|| Warning {
+            code,
+            severity: code.severity(),
+            column,
+            column_name: None,
+            occurrences: 0,
+            message: message
+                .clone()
+                .unwrap_or_else(|| code.message().to_string()),
+            samples: Vec::new(),
+        });
         entry.occurrences += occurrences;
         if let Some(message) = message {
             if entry.occurrences == occurrences {
@@ -287,12 +284,7 @@ mod tests {
     fn samples_are_bounded_and_escaped() {
         let mut collector = WarningCollector::new();
         for index in 0..10 {
-            collector.add(
-                Some(0),
-                WarningCode::QuotedMultiline,
-                index,
-                "a\nb\tc",
-            );
+            collector.add(Some(0), WarningCode::QuotedMultiline, index, "a\nb\tc");
         }
         let warnings = collector.finish(&["x".into()]);
         assert_eq!(warnings[0].occurrences, 10);

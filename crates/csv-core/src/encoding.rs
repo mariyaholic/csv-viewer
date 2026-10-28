@@ -62,13 +62,9 @@ impl EncodingKind {
             .collect();
         match normalized.as_str() {
             "utf8" | "utf-8" => Some(EncodingKind::Utf8),
-            "utf16" | "utf-16" | "utf16le" | "utf-16le" | "utf16-le" => {
-                Some(EncodingKind::Utf16Le)
-            }
+            "utf16" | "utf-16" | "utf16le" | "utf-16le" | "utf16-le" => Some(EncodingKind::Utf16Le),
             "utf16be" | "utf-16be" | "utf16-be" => Some(EncodingKind::Utf16Be),
-            "windows1252" | "windows-1252" | "cp1252" | "1252" => {
-                Some(EncodingKind::Windows1252)
-            }
+            "windows1252" | "windows-1252" | "cp1252" | "1252" => Some(EncodingKind::Windows1252),
             _ => None,
         }
     }
@@ -309,11 +305,9 @@ impl<R: Read> DecodeReader<R> {
 
             let last = self.eof && self.input_pos == self.input.len();
             let mut scratch = vec![0u8; self.buffer_size];
-            let (result, read, written, had_errors) = self.decoder.decode_to_utf8(
-                &self.input[self.input_pos..],
-                &mut scratch,
-                last,
-            );
+            let (result, read, written, had_errors) =
+                self.decoder
+                    .decode_to_utf8(&self.input[self.input_pos..], &mut scratch, last);
             self.input_pos += read;
             if written > 0 {
                 self.output.extend_from_slice(&scratch[..written]);
@@ -380,16 +374,25 @@ mod tests {
 
     #[test]
     fn detects_utf16_without_bom() {
-        let le: Vec<u8> = "a,b,c\n1,2,3\n".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let le: Vec<u8> = "a,b,c\n1,2,3\n"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
         assert_eq!(detect(&le).kind, EncodingKind::Utf16Le);
-        let be: Vec<u8> = "a,b,c\n1,2,3\n".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        let be: Vec<u8> = "a,b,c\n1,2,3\n"
+            .encode_utf16()
+            .flat_map(|u| u.to_be_bytes())
+            .collect();
         assert_eq!(detect(&be).kind, EncodingKind::Utf16Be);
     }
 
     #[test]
     fn parses_known_labels() {
         assert_eq!(EncodingKind::parse("UTF-8"), Some(EncodingKind::Utf8));
-        assert_eq!(EncodingKind::parse("cp1252"), Some(EncodingKind::Windows1252));
+        assert_eq!(
+            EncodingKind::parse("cp1252"),
+            Some(EncodingKind::Windows1252)
+        );
         assert_eq!(EncodingKind::parse("utf-16"), Some(EncodingKind::Utf16Le));
         assert_eq!(EncodingKind::parse("shift_jis"), None);
     }
@@ -397,7 +400,8 @@ mod tests {
     #[test]
     fn decodes_windows_1252_and_counts_replacements() {
         let stats = DecodeStats::default();
-        let mut reader = DecodeReader::new(&b"caf\xe9\n"[..], EncodingKind::Windows1252, stats.clone());
+        let mut reader =
+            DecodeReader::new(&b"caf\xe9\n"[..], EncodingKind::Windows1252, stats.clone());
         let mut out = String::new();
         reader.read_to_string(&mut out).unwrap();
         assert_eq!(out, "caf\u{e9}\n");

@@ -49,9 +49,20 @@ fn decodes_windows_1252_without_replacing_text() {
 
 #[test]
 fn detects_semicolon_tab_and_pipe() {
-    assert_eq!(scan("semicolon.csv", &ScanRequest::full()).dialect.delimiter, ';');
-    assert_eq!(scan("tab.tsv", &ScanRequest::full()).dialect.delimiter, '\t');
-    assert_eq!(scan("pipe.csv", &ScanRequest::full()).dialect.delimiter, '|');
+    assert_eq!(
+        scan("semicolon.csv", &ScanRequest::full())
+            .dialect
+            .delimiter,
+        ';'
+    );
+    assert_eq!(
+        scan("tab.tsv", &ScanRequest::full()).dialect.delimiter,
+        '\t'
+    );
+    assert_eq!(
+        scan("pipe.csv", &ScanRequest::full()).dialect.delimiter,
+        '|'
+    );
 }
 
 #[test]

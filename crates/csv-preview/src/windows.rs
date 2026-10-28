@@ -25,7 +25,7 @@ use csvview_core::text::render_text;
 use csvview_core::{ScanReport, ScanRequest, Settings};
 
 use crate::registration::{
-    register_plan, unregister_keys, ExpectedValue, RegistryValue, CLSID_CSV_PREVIEW,
+    register_plan, ExpectedValue, RegistryValue, CLSID_CSV_PREVIEW, PREVIEW_HANDLERS_KEY,
 };
 use crate::{PreviewConfig, PreviewSession, SessionPhase, WorkerBackend};
 
@@ -116,10 +116,18 @@ const fn guid(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> GUID {
 
 const IID_IUNKNOWN: GUID = guid(0x0000_0000, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 const IID_ICLASSFACTORY: GUID = guid(0x0000_0001, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
-const IID_IINITIALIZEWITHSTREAM: GUID =
-    guid(0xB824_B49D, 0x22AC, 0x4161, [0xAC, 0x8A, 0x99, 0x16, 0xE8, 0xFA, 0x3F, 0x7F]);
-const IID_IPREVIEWHANDLER: GUID =
-    guid(0x8895_B1C6, 0xB41F, 0x4C1C, [0xA5, 0x62, 0x0D, 0x56, 0x42, 0x50, 0x83, 0x6F]);
+const IID_IINITIALIZEWITHSTREAM: GUID = guid(
+    0xB824_B49D,
+    0x22AC,
+    0x4161,
+    [0xAC, 0x8A, 0x99, 0x16, 0xE8, 0xFA, 0x3F, 0x7F],
+);
+const IID_IPREVIEWHANDLER: GUID = guid(
+    0x8895_B1C6,
+    0xB41F,
+    0x4C1C,
+    [0xA5, 0x62, 0x0D, 0x56, 0x42, 0x50, 0x83, 0x6F],
+);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -212,7 +220,8 @@ struct IStreamVtbl {
 
 #[repr(C)]
 struct IPreviewHandlerVtbl {
-    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
     add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
     release: unsafe extern "system" fn(*mut c_void) -> ULONG,
     set_window: unsafe extern "system" fn(*mut c_void, HWND) -> HRESULT,
@@ -226,7 +235,8 @@ struct IPreviewHandlerVtbl {
 
 #[repr(C)]
 struct IInitializeWithStreamVtbl {
-    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
     add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
     release: unsafe extern "system" fn(*mut c_void) -> ULONG,
     initialize: unsafe extern "system" fn(*mut c_void, *mut c_void, u32) -> HRESULT,
@@ -234,11 +244,16 @@ struct IInitializeWithStreamVtbl {
 
 #[repr(C)]
 struct IClassFactoryVtbl {
-    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
     add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
     release: unsafe extern "system" fn(*mut c_void) -> ULONG,
-    create_instance:
-        unsafe extern "system" fn(*mut c_void, *mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    create_instance: unsafe extern "system" fn(
+        *mut c_void,
+        *mut c_void,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
     lock_server: unsafe extern "system" fn(*mut c_void, BOOL) -> HRESULT,
 }
 
@@ -424,7 +439,9 @@ impl Read for StreamReader {
             )
         };
         if result < 0 {
-            Err(io::Error::other(format!("IStream::Read failed: 0x{result:08X}")))
+            Err(io::Error::other(format!(
+                "IStream::Read failed: 0x{result:08X}"
+            )))
         } else {
             Ok(read as usize)
         }
@@ -612,18 +629,14 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
     settings.apply_to(&mut request);
     let reader = StreamReader::new(object.stream);
     let length_hint = stream_size_hint(object.stream);
-    let session = match PreviewSession::start(
-        reader,
-        length_hint,
-        &request,
-        PreviewConfig::default(),
-    ) {
-        Ok(session) => Arc::new(session),
-        Err(error) => {
-            object.set_error_text(&format!("CSV preview could not start: {error}"));
-            return E_FAIL;
-        }
-    };
+    let session =
+        match PreviewSession::start(reader, length_hint, &request, PreviewConfig::default()) {
+            Ok(session) => Arc::new(session),
+            Err(error) => {
+                object.set_error_text(&format!("CSV preview could not start: {error}"));
+                return E_FAIL;
+            }
+        };
     object.session = Some(session);
     object.refresh_text();
 
@@ -689,9 +702,9 @@ impl PreviewObject {
                 "\n\nFull scan failed: {}",
                 snapshot.error.as_deref().unwrap_or("unknown error")
             )),
-            SessionPhase::Complete => {
-                text.push_str("\n\nFull scan complete. Only the explicit scan result is shown as a total.")
-            }
+            SessionPhase::Complete => text.push_str(
+                "\n\nFull scan complete. Only the explicit scan result is shown as a total.",
+            ),
             _ => {
                 if !report.complete {
                     text.push_str(
@@ -724,14 +737,10 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
     let mut request = ScanRequest::full();
     let (settings, _) = Settings::load(None);
     settings.apply_to(&mut request);
-    let timeout = Duration::from_millis(
-        request.limits.deadline_ms.unwrap_or(120_000),
-    );
-    if let Err(error) = session.start_full_scan(
-        Arc::new(WorkerBackend::new(worker)),
-        request,
-        timeout,
-    ) {
+    let timeout = Duration::from_millis(request.limits.deadline_ms.unwrap_or(120_000));
+    if let Err(error) =
+        session.start_full_scan(Arc::new(WorkerBackend::new(worker)), request, timeout)
+    {
         object.set_error_text(&format!("Full scan could not start: {error}"));
         return;
     }
@@ -1064,12 +1073,11 @@ fn wide_text(value: &str) -> Vec<u16> {
 
 fn register_module(module: &str, force: bool) -> HRESULT {
     unsafe {
-        for entry in register_plan(module) {
+        let plan = register_plan(module);
+        for entry in &plan {
             if entry.is_association() && !force {
                 if let Some(existing) = read_default(&entry.key) {
-                    if !existing.is_empty()
-                        && !existing.eq_ignore_ascii_case(CLSID_CSV_PREVIEW)
-                    {
+                    if !existing.is_empty() && !existing.eq_ignore_ascii_case(CLSID_CSV_PREVIEW) {
                         eprintln!(
                             "csv-preview: refusing to replace preview handler {existing:?} for {}; \
                              ask the user before changing it",
@@ -1079,7 +1087,9 @@ fn register_module(module: &str, force: bool) -> HRESULT {
                     }
                 }
             }
-            if let Err(error) = write_value(&entry) {
+        }
+        for entry in &plan {
+            if let Err(error) = write_value(entry) {
                 eprintln!("csv-preview: registration failed: {error}");
                 return E_FAIL;
             }
@@ -1098,16 +1108,21 @@ fn unregister_module() -> HRESULT {
                 let _ = delete_value(&entry.key, entry.name);
             }
         }
-        for key in unregister_keys() {
-            let key = wide(&format!("Software\\Classes\\{key}"));
-            RegDeleteKeyW(HKEY_CURRENT_USER, key.as_ptr());
-        }
+        // Do not delete keys whose creation cannot be attributed to this install.
         S_OK
     }
 }
 
+fn registry_path(key: &str) -> String {
+    if key == PREVIEW_HANDLERS_KEY {
+        key.to_owned()
+    } else {
+        format!("Software\\Classes\\{key}")
+    }
+}
+
 unsafe fn read_default(key: &str) -> Option<String> {
-    let full = wide(&format!("Software\\Classes\\{key}"));
+    let full = wide(&registry_path(key));
     let mut handle: HKEY = ptr::null_mut();
     if RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle) != 0 {
         return None;
@@ -1148,13 +1163,15 @@ unsafe fn read_default(key: &str) -> Option<String> {
 }
 
 unsafe fn write_value(entry: &RegistryValue) -> Result<(), String> {
-    let full = format!("Software\\Classes\\{}", entry.key);
+    let full = registry_path(&entry.key);
     let handle = create_key(&full)?;
     let name = entry.name.map(wide);
     let value = wide(&entry.value);
     let status = RegSetValueExW(
         handle,
-        name.as_ref().map(|name| name.as_ptr()).unwrap_or(ptr::null()),
+        name.as_ref()
+            .map(|name| name.as_ptr())
+            .unwrap_or(ptr::null()),
         0,
         REG_SZ,
         value.as_ptr() as *const u8,
@@ -1169,7 +1186,7 @@ unsafe fn write_value(entry: &RegistryValue) -> Result<(), String> {
 }
 
 unsafe fn delete_value(key: &str, name: Option<&'static str>) -> Result<(), String> {
-    let full = wide(&format!("Software\\Classes\\{key}"));
+    let full = wide(&registry_path(key));
     let mut handle: HKEY = ptr::null_mut();
     if RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_WRITE, &mut handle) != 0 {
         return Ok(());
@@ -1177,7 +1194,9 @@ unsafe fn delete_value(key: &str, name: Option<&'static str>) -> Result<(), Stri
     let name = name.map(wide);
     let status = RegDeleteValueW(
         handle,
-        name.as_ref().map(|name| name.as_ptr()).unwrap_or(ptr::null()),
+        name.as_ref()
+            .map(|name| name.as_ptr())
+            .unwrap_or(ptr::null()),
     );
     RegCloseKey(handle);
     if status == 0 || status == 2 {
@@ -1199,7 +1218,7 @@ unsafe fn value_matches(entry: &RegistryValue) -> bool {
 }
 
 unsafe fn read_value(key: &str, name: Option<&str>) -> Option<String> {
-    let full = wide(&format!("Software\\Classes\\{key}"));
+    let full = wide(&registry_path(key));
     let mut handle: HKEY = ptr::null_mut();
     if RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle) != 0 {
         return None;
@@ -1209,7 +1228,9 @@ unsafe fn read_value(key: &str, name: Option<&str>) -> Option<String> {
     let mut length = 0u32;
     let status = RegQueryValueExW(
         handle,
-        name.as_ref().map(|name| name.as_ptr()).unwrap_or(ptr::null()),
+        name.as_ref()
+            .map(|name| name.as_ptr())
+            .unwrap_or(ptr::null()),
         ptr::null_mut(),
         &mut value_type,
         ptr::null_mut(),
@@ -1222,7 +1243,9 @@ unsafe fn read_value(key: &str, name: Option<&str>) -> Option<String> {
     let mut buffer = vec![0u8; length as usize];
     let status = RegQueryValueExW(
         handle,
-        name.as_ref().map(|name| name.as_ptr()).unwrap_or(ptr::null()),
+        name.as_ref()
+            .map(|name| name.as_ptr())
+            .unwrap_or(ptr::null()),
         ptr::null_mut(),
         &mut value_type,
         buffer.as_mut_ptr(),
@@ -1398,7 +1421,6 @@ extern "system" {
         data_size: *mut DWORD,
     ) -> LONG;
     fn RegDeleteValueW(key: HKEY, value_name: LPCWSTR) -> LONG;
-    fn RegDeleteKeyW(key: HKEY, sub_key: LPCWSTR) -> LONG;
     fn RegCloseKey(key: HKEY) -> LONG;
 }
 

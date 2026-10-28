@@ -165,7 +165,9 @@ impl WorkerBackend {
                 Some(WorkerMessage::Error { code, message, .. }) => {
                     return Err(format!("worker handshake failed ({code:?}): {message}"));
                 }
-                Some(other) => return Err(format!("unexpected worker handshake message: {other:?}")),
+                Some(other) => {
+                    return Err(format!("unexpected worker handshake message: {other:?}"))
+                }
                 None => return Err("worker handshake timed out".to_string()),
             }
 
@@ -194,7 +196,10 @@ impl WorkerBackend {
                             return Err(format!("worker accepted unexpected scan id {id}"));
                         }
                     }
-                    Some(WorkerMessage::Progress { id, progress: update }) => {
+                    Some(WorkerMessage::Progress {
+                        id,
+                        progress: update,
+                    }) => {
                         if id != 1 {
                             return Err(format!("worker progress for unexpected scan id {id}"));
                         }
@@ -229,7 +234,11 @@ impl WorkerBackend {
         })();
 
         if cancel.load(Ordering::SeqCst) {
-            let _ = write_client(&mut stdin, &ClientMessage::Cancel { id: 1 }, self.max_frame_bytes);
+            let _ = write_client(
+                &mut stdin,
+                &ClientMessage::Cancel { id: 1 },
+                self.max_frame_bytes,
+            );
         }
         let _ = write_client(&mut stdin, &ClientMessage::Shutdown, self.max_frame_bytes);
         finish_child(&mut child, stderr, self.stop_grace);

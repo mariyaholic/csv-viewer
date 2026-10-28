@@ -294,19 +294,13 @@ impl PreviewSession {
     ) -> Result<(), PreviewError> {
         let spool = {
             let mut state = self.inner.state.lock().unwrap();
-            if matches!(
-                state.phase,
-                SessionPhase::Scanning | SessionPhase::Complete
-            ) {
+            if matches!(state.phase, SessionPhase::Scanning | SessionPhase::Complete) {
                 return Err(PreviewError::Busy);
             }
             if state.phase != SessionPhase::SpoolReady {
                 return Err(PreviewError::NoSpool);
             }
-            let spool = state
-                .spool_source
-                .clone()
-                .ok_or(PreviewError::NoSpool)?;
+            let spool = state.spool_source.clone().ok_or(PreviewError::NoSpool)?;
             state.phase = SessionPhase::Scanning;
             state.progress = None;
             state.error = None;
@@ -319,18 +313,14 @@ impl PreviewSession {
         thread::Builder::new()
             .name("csv-preview-scan".to_string())
             .spawn(move || {
-                let result = backend.scan(
-                    &spool,
-                    &request,
-                    &thread_inner.cancel,
-                    &mut |progress| {
+                let result =
+                    backend.scan(&spool, &request, &thread_inner.cancel, &mut |progress| {
                         let mut state = thread_inner.state.lock().unwrap();
                         if state.phase == SessionPhase::Scanning {
                             state.progress = Some(progress);
                             thread_inner.changed.notify_all();
                         }
-                    },
-                );
+                    });
                 let mut state = thread_inner.state.lock().unwrap();
                 if thread_inner.cancel.load(Ordering::SeqCst) {
                     if !state.phase.is_terminal() {

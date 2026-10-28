@@ -34,7 +34,9 @@ fn preview_is_immediate_and_full_scan_is_explicit() {
     )
     .unwrap();
     let snapshot = session.snapshot();
-    let preview = snapshot.preview.expect("preview should be available immediately");
+    let preview = snapshot
+        .preview
+        .expect("preview should be available immediately");
     assert!(!preview.complete, "a head preview is never a complete scan");
     assert_eq!(preview.total_records, None);
     assert!(!preview.preview_rows.is_empty());
@@ -65,8 +67,7 @@ fn spool_cap_marks_a_scan_incomplete() {
     let request = ScanRequest::full();
     let mut config = config();
     config.max_spool_bytes = 10;
-    let session =
-        PreviewSession::start(Cursor::new(csv), Some(100), &request, config).unwrap();
+    let session = PreviewSession::start(Cursor::new(csv), Some(100), &request, config).unwrap();
     assert!(session.wait_for_spool(Duration::from_secs(2)));
     let snapshot = session.snapshot();
     assert!(snapshot.spool.truncated);
@@ -162,7 +163,12 @@ fn worker_backend_matches_in_process_report() {
         .unwrap();
     assert!(session.wait_for_scan(Duration::from_secs(10)));
     let snapshot = session.snapshot();
-    assert_eq!(snapshot.phase, SessionPhase::Complete, "{:?}", snapshot.error);
+    assert_eq!(
+        snapshot.phase,
+        SessionPhase::Complete,
+        "{:?}",
+        snapshot.error
+    );
     let remote = snapshot.full_report.expect("remote report");
     let local = csvview_core::scan(
         Cursor::new(CSV.to_vec()),

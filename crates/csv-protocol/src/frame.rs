@@ -31,7 +31,10 @@ impl fmt::Display for FrameError {
             FrameError::Truncated => write!(formatter, "truncated frame"),
             FrameError::Empty => write!(formatter, "empty frame"),
             FrameError::TooLarge { length, maximum } => {
-                write!(formatter, "frame of {length} bytes exceeds maximum {maximum}")
+                write!(
+                    formatter,
+                    "frame of {length} bytes exceeds maximum {maximum}"
+                )
             }
             FrameError::Io(error) => write!(formatter, "I/O error: {error}"),
             FrameError::Json(message) => write!(formatter, "invalid message: {message}"),
@@ -81,7 +84,10 @@ enum ReadState {
     Complete,
 }
 
-fn read_exact_or_closed<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<ReadState, FrameError> {
+fn read_exact_or_closed<R: Read>(
+    reader: &mut R,
+    buffer: &mut [u8],
+) -> Result<ReadState, FrameError> {
     let mut filled = 0;
     while filled < buffer.len() {
         match reader.read(&mut buffer[filled..]) {

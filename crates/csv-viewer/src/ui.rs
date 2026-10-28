@@ -6,9 +6,7 @@ use std::time::Duration;
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
-use crossterm::terminal::{
-    self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use csvview_core::text::{pad_display, sanitize_display, truncate_display};
 use csvview_core::DateRangeStatus;
 use unicode_width::UnicodeWidthStr;
@@ -57,8 +55,8 @@ impl Drop for TerminalGuard {
 }
 
 fn draw(app: &mut App, width: usize, height: usize) -> io::Result<()> {
-    let width = width.max(40);
-    let height = height.max(10);
+    let width = width.max(1);
+    let height = height.max(1);
     let body_rows = height.saturating_sub(8).max(1);
     let column_guess = ((width.saturating_sub(8)) / 14).max(1);
     app.set_viewport(body_rows, column_guess);
@@ -71,7 +69,11 @@ fn draw(app: &mut App, width: usize, height: usize) -> io::Result<()> {
         "{} · {} · header {} · {}",
         app.report.encoding.label,
         format!("delimiter {:?}", app.report.dialect.delimiter),
-        if app.report.header.present { "yes" } else { "no" },
+        if app.report.header.present {
+            "yes"
+        } else {
+            "no"
+        },
         app.report.coverage_summary()
     );
     if app.scanning {
@@ -98,7 +100,13 @@ fn draw(app: &mut App, width: usize, height: usize) -> io::Result<()> {
         }
     } else if app.show_warnings {
         lines.push(String::new());
-        lines.push(truncate_display("Review notes (facts about the source; no conversion is made)", width).0);
+        lines.push(
+            truncate_display(
+                "Review notes (facts about the source; no conversion is made)",
+                width,
+            )
+            .0,
+        );
         if app.report.warnings.is_empty() {
             lines.push("No review notes for the scanned records.".to_string());
         } else {
@@ -115,18 +123,18 @@ fn draw(app: &mut App, width: usize, height: usize) -> io::Result<()> {
                     .as_deref()
                     .map(|name| format!(" [{name}]"))
                     .unwrap_or_default();
-                lines.push(truncate_display(
-                    &format!(
-                        "! {:?}{column} ×{}: {}",
-                        warning.code, warning.occurrences, warning.message
-                    ),
-                    width,
-                ).0);
-                if let Some(sample) = warning.samples.first() {
-                    lines.push(truncate_display(
-                        &format!("    e.g. {:?}", sample.value),
+                lines.push(
+                    truncate_display(
+                        &format!(
+                            "! {:?}{column} ×{}: {}",
+                            warning.code, warning.occurrences, warning.message
+                        ),
                         width,
-                    ).0);
+                    )
+                    .0,
+                );
+                if let Some(sample) = warning.samples.first() {
+                    lines.push(truncate_display(&format!("    e.g. {:?}", sample.value), width).0);
                 }
             }
         }
@@ -142,10 +150,13 @@ fn draw(app: &mut App, width: usize, height: usize) -> io::Result<()> {
         "q quit · ↑↓ scroll · ←→ columns · PgUp/PgDn · w warnings · d details · a about · f full scan",
         width,
     ).0);
-    lines.push(truncate_display(
-        "Read-only · formulas never executed · links never opened · Made by Maria · Apache-2.0",
-        width,
-    ).0);
+    lines.push(
+        truncate_display(
+            "Read-only · formulas never executed · links never opened · Made by Maria · Apache-2.0",
+            width,
+        )
+        .0,
+    );
 
     let mut stdout = io::stdout();
     execute!(stdout, MoveTo(0, 0), Clear(ClearType::All))?;
@@ -196,8 +207,10 @@ fn render_table(app: &App, width: usize, body_rows: usize, lines: &mut Vec<Strin
         header.push_str(&pad_display(name, *width));
         header.push_str("  ");
     }
-    lines.push(truncate_display(header.trim_end(), width).0);
-    lines.push("-".repeat(width.min(120)));
+    let header = truncate_display(header.trim_end(), width).0;
+    let rule = "-".repeat(header.width());
+    lines.push(header);
+    lines.push(rule);
 
     let visible_rows = app.table.visible_rows();
     if visible_rows.is_empty() {
@@ -264,9 +277,7 @@ fn detail_lines(app: &App) -> Vec<String> {
         if market.available {
             lines.push(format!(
                 "Market profile: {} valid rows, {} missing; complete={}",
-                market.sample_rows,
-                market.missing_rows,
-                !market.coverage_incomplete
+                market.sample_rows, market.missing_rows, !market.coverage_incomplete
             ));
             for finding in &market.findings {
                 lines.push(format!(

@@ -94,7 +94,9 @@ impl MarketRequest {
             ("baseline_tolerance", t.baseline_tolerance),
         ] {
             if !value.is_finite() || value < 0.0 {
-                return Err(format!("market threshold {name} must be finite and non-negative"));
+                return Err(format!(
+                    "market threshold {name} must be finite and non-negative"
+                ));
             }
         }
         if !t.price_jump_ratio.is_finite() || t.price_jump_ratio <= 1.0 {
@@ -292,7 +294,9 @@ impl MarketAccumulator {
         if fields.spread.is_some() && spread_value.is_none() {
             self.missing_rows += 1;
         }
-        if fields.volume.is_some() && parse_price(fields.volume.and_then(|index| row.get(index))).is_none() {
+        if fields.volume.is_some()
+            && parse_price(fields.volume.and_then(|index| row.get(index))).is_none()
+        {
             self.missing_rows += 1;
         }
         self.sample_rows += 1;
@@ -479,8 +483,9 @@ impl MarketAccumulator {
             findings.push(MarketFinding {
                 code: MarketFindingCode::MissingData,
                 severity: MarketSeverity::Info,
-                message: "Some rows are missing a mapped price field or contain an unreadable value."
-                    .to_string(),
+                message:
+                    "Some rows are missing a mapped price field or contain an unreadable value."
+                        .to_string(),
                 count: self.missing_rows,
                 sample_size: self.sample_rows + self.missing_rows,
                 threshold: 0.0,
@@ -500,8 +505,9 @@ impl MarketAccumulator {
                 findings.push(MarketFinding {
                     code: MarketFindingCode::BaselineDifference,
                     severity: MarketSeverity::Warning,
-                    message: "Current median close differs from the dated baseline beyond tolerance."
-                        .to_string(),
+                    message:
+                        "Current median close differs from the dated baseline beyond tolerance."
+                            .to_string(),
                     count: *sample_size,
                     sample_size: *sample_size,
                     threshold: thresholds.baseline_tolerance,
@@ -749,7 +755,14 @@ mod tests {
     #[test]
     fn constant_spread_is_flagged() {
         let rows = (0..5)
-            .map(|i| row(100.0 + i as f64, 101.0 + i as f64, 100.0 + i as f64, 100.5 + i as f64))
+            .map(|i| {
+                row(
+                    100.0 + i as f64,
+                    101.0 + i as f64,
+                    100.0 + i as f64,
+                    100.5 + i as f64,
+                )
+            })
             .collect::<Vec<_>>();
         let report = run(&rows, request());
         assert!(report

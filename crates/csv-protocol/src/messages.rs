@@ -24,13 +24,17 @@ pub struct SourceSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
-    Hello { protocol_version: u32 },
+    Hello {
+        protocol_version: u32,
+    },
     Scan {
         id: u64,
         source: SourceSpec,
         request: ScanRequest,
     },
-    Cancel { id: u64 },
+    Cancel {
+        id: u64,
+    },
     Shutdown,
 }
 

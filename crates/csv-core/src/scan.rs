@@ -28,8 +28,8 @@ use crate::encoding::{
 use crate::market::MarketAccumulator;
 use crate::model::{
     ColumnProfile, DateRangeReport, DateRangeRequest, DateRangeStatus, HeaderChoice, HeaderReport,
-    IncompleteReason, InputInfo, PreviewRow, ScanCoverage, ScanError, ScanProgress,
-    ScanReport, ScanRequest, TypeCounts,
+    IncompleteReason, InputInfo, PreviewRow, ScanCoverage, ScanError, ScanProgress, ScanReport,
+    ScanRequest, TypeCounts,
 };
 use crate::types::{
     boolean_spelling, classify_cell, digit_count, has_embedded_newline, has_leading_zero,
@@ -40,12 +40,7 @@ use crate::warnings::{WarningCode, WarningCollector};
 /// Scan a file read-only. The caller supplies a length hint so coverage can
 /// display a denominator.
 pub fn scan_file(path: &Path, request: &ScanRequest) -> Result<ScanReport, ScanError> {
-    scan_file_with_progress(
-        path,
-        request,
-        &AtomicBool::new(false),
-        &mut |_| {},
-    )
+    scan_file_with_progress(path, request, &AtomicBool::new(false), &mut |_| {})
 }
 
 pub fn scan_file_with_progress(
@@ -91,7 +86,11 @@ pub fn scan_file_with_info(
     scan_with_progress(file, info, request, cancel, progress)
 }
 
-pub fn scan<R: Read>(reader: R, info: InputInfo, request: &ScanRequest) -> Result<ScanReport, ScanError> {
+pub fn scan<R: Read>(
+    reader: R,
+    info: InputInfo,
+    request: &ScanRequest,
+) -> Result<ScanReport, ScanError> {
     scan_with_progress(reader, info, request, &AtomicBool::new(false), &mut |_| {})
 }
 
@@ -132,9 +131,7 @@ pub fn scan_with_progress<R: Read>(
         }
         DialectChoice::Explicit(dialect) => (dialect, ChoiceSource::Override, 100),
     };
-    dialect
-        .validate()
-        .map_err(ScanError::InvalidRequest)?;
+    dialect.validate().map_err(ScanError::InvalidRequest)?;
 
     let sample_rows = read_sample_records(&sample_text, &dialect, 50);
     // The csv crate's line counter is one low for CRLF files (observed for
@@ -247,7 +244,9 @@ pub fn scan_with_progress<R: Read>(
     let final_bytes = if end.complete && !info.truncated && !info.preview_only {
         info.total_bytes.unwrap_or_else(|| stats.source_read())
     } else {
-        state.bytes.max(stats.source_offset(csv_reader.position().byte()))
+        state
+            .bytes
+            .max(stats.source_offset(csv_reader.position().byte()))
     };
     state.update_bytes(final_bytes);
     state.emit_progress(final_bytes);
@@ -497,10 +496,7 @@ impl<'a> ScanState<'a> {
     }
 
     fn set_header(&mut self, raw: &[String]) {
-        let raw: Vec<String> = raw
-            .iter()
-            .map(|cell| truncate_chars(cell, 200).0)
-            .collect();
+        let raw: Vec<String> = raw.iter().map(|cell| truncate_chars(cell, 200).0).collect();
         self.header_raw = raw.clone();
         let names = header_names(&raw, self.request.limits.max_columns, &mut self.warnings);
         self.install_columns(names);
@@ -801,7 +797,10 @@ impl<'a> ScanState<'a> {
         self.dates
             .iter()
             .map(|date| {
-                let column_name = self.columns.get(date.request.column).map(|c| c.name.clone());
+                let column_name = self
+                    .columns
+                    .get(date.request.column)
+                    .map(|c| c.name.clone());
                 if !complete {
                     return DateRangeReport {
                         column: date.request.column,
@@ -844,7 +843,9 @@ impl<'a> ScanState<'a> {
                         parsed: 0,
                         invalid: date.invalid,
                         missing: date.missing,
-                        reason: Some("no values matched the chosen date interpretation".to_string()),
+                        reason: Some(
+                            "no values matched the chosen date interpretation".to_string(),
+                        ),
                     };
                 }
                 DateRangeReport {
@@ -941,11 +942,17 @@ mod tests {
         request.limits.max_records = Some(1);
         let report = scan_text("a,b\n1,2\n3,4\n", &request);
         assert!(!report.complete);
-        assert_eq!(report.incomplete_reason, Some(IncompleteReason::RecordLimit));
+        assert_eq!(
+            report.incomplete_reason,
+            Some(IncompleteReason::RecordLimit)
+        );
         assert_eq!(report.total_records, None);
         assert_eq!(report.scanned.data_records, 1);
         assert!(report.scanned.bytes > 0);
-        assert!(report.scanned.bytes < 12, "partial coverage must not claim the whole source");
+        assert!(
+            report.scanned.bytes < 12,
+            "partial coverage must not claim the whole source"
+        );
     }
 
     #[test]
@@ -957,7 +964,10 @@ mod tests {
         )
         .unwrap();
         assert!(!report.complete);
-        assert_eq!(report.incomplete_reason, Some(IncompleteReason::PreviewOnly));
+        assert_eq!(
+            report.incomplete_reason,
+            Some(IncompleteReason::PreviewOnly)
+        );
         assert_eq!(report.total_records, None);
     }
 

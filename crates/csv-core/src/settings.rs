@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::dialect::{Dialect, DialectChoice};
-use crate::encoding::{EncodingKind, ChoiceSource};
+use crate::encoding::{ChoiceSource, EncodingKind};
 use crate::market::MarketRequest;
 use crate::model::{EncodingChoice, HeaderChoice, ScanRequest};
 
@@ -196,7 +196,12 @@ pub fn default_path() -> Option<PathBuf> {
             }
         }
         let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join(".config").join("csv-viewer").join("settings.json"))
+        Some(
+            PathBuf::from(home)
+                .join(".config")
+                .join("csv-viewer")
+                .join("settings.json"),
+        )
     }
 }
 
@@ -230,7 +235,9 @@ mod tests {
         std::fs::write(&path, "{not json").unwrap();
         let (loaded, warnings) = Settings::load(Some(&path));
         assert_eq!(loaded, Settings::default());
-        assert!(warnings.iter().any(|warning| warning.contains("could not be parsed")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("could not be parsed")));
     }
 
     #[test]
@@ -252,7 +259,10 @@ mod tests {
         settings.apply_to(&mut request);
         assert_eq!(request.preview_rows, 200);
         assert!(matches!(request.dialect, DialectChoice::Explicit(_)));
-        assert!(matches!(request.encoding, crate::model::EncodingChoice::Explicit(_)));
+        assert!(matches!(
+            request.encoding,
+            crate::model::EncodingChoice::Explicit(_)
+        ));
         assert_eq!(request.header, HeaderChoice::Present);
     }
 

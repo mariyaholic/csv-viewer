@@ -7,11 +7,11 @@ mod app;
 mod args;
 mod ui;
 
-use std::io::IsTerminal;
 use csvview_core::{
     scan_file, DateRangeRequest, Dialect, DialectChoice, EncodingChoice, ScanLimits, ScanRequest,
     Settings,
 };
+use std::io::IsTerminal;
 
 use crate::app::App;
 use crate::args::Options;
@@ -80,7 +80,9 @@ fn build_request(options: &Options, settings: &Settings) -> ScanRequest {
         request.header = header;
     }
     if let (Some(column), Some(format)) = (options.date_column, options.date_format) {
-        request.date_ranges.push(DateRangeRequest { column, format });
+        request
+            .date_ranges
+            .push(DateRangeRequest { column, format });
     }
     request.preview_rows = options.rows;
     request.limits.max_records = Some(options.rows as u64);

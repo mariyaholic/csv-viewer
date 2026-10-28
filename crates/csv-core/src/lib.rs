@@ -24,18 +24,15 @@ pub mod warnings;
 pub use dialect::{Dialect, DialectChoice, DialectReport};
 pub use encoding::{ChoiceSource, EncodingKind, EncodingReport};
 pub use market::{
-    BaselineComparison, ColumnRef, MarketBaseline, MarketFields, MarketFinding,
-    MarketFindingCode, MarketMetrics, MarketReport, MarketRequest, MarketSeverity,
-    MarketThresholds,
+    BaselineComparison, ColumnRef, MarketBaseline, MarketFields, MarketFinding, MarketFindingCode,
+    MarketMetrics, MarketReport, MarketRequest, MarketSeverity, MarketThresholds,
 };
 pub use model::{
-    ColumnProfile, DateRangeReport, DateRangeRequest, DateRangeStatus, EncodingChoice, HeaderChoice,
-    HeaderReport, IncompleteReason, InputInfo, PreviewRow, ScanCoverage, ScanError, ScanLimits,
-    ScanProgress, ScanReport, ScanRequest,
+    ColumnProfile, DateRangeReport, DateRangeRequest, DateRangeStatus, EncodingChoice,
+    HeaderChoice, HeaderReport, IncompleteReason, InputInfo, PreviewRow, ScanCoverage, ScanError,
+    ScanLimits, ScanProgress, ScanReport, ScanRequest,
 };
-pub use scan::{
-    scan, scan_file, scan_file_with_info, scan_file_with_progress, scan_with_progress,
-};
+pub use scan::{scan, scan_file, scan_file_with_info, scan_file_with_progress, scan_with_progress};
 pub use settings::Settings;
 pub use table::TableModel;
 pub use types::{CellKind, CivilDate, DateFormat};

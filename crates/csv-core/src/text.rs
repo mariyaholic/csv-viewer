@@ -71,7 +71,11 @@ pub fn render_text(report: &ScanReport, width: usize, max_rows: usize) -> String
     lines.push(truncate_display("CSV viewer and preview — Made by Maria", width).0);
     lines.push(String::new());
 
-    let bom = if report.encoding.bom { ", BOM removed" } else { "" };
+    let bom = if report.encoding.bom {
+        ", BOM removed"
+    } else {
+        ""
+    };
     lines.push(format!(
         "Encoding: {}{}   Delimiter: {:?}   Header: {}",
         report.encoding.label,
@@ -105,7 +109,7 @@ pub fn render_text(report: &ScanReport, width: usize, max_rows: usize) -> String
             header_cells.push("…".to_string());
         }
         lines.push(format!("{:>5}  {}", "#", header_cells.join("  ")));
-        let rule: usize = 7 + header_cells.iter().map(|cell| cell.width()).sum::<usize>();
+        let rule = 7 + header_cells.join("  ").width();
         lines.push("-".repeat(rule.min(width)));
         for row in report.preview_rows.iter().take(max_rows) {
             let mut cells = Vec::new();
@@ -160,7 +164,10 @@ pub fn render_text(report: &ScanReport, width: usize, max_rows: usize) -> String
             lines.push(format_warning(warning, width));
         }
         if report.warnings.len() > 16 {
-            lines.push(format!("… {} more review notes", report.warnings.len() - 16));
+            lines.push(format!(
+                "… {} more review notes",
+                report.warnings.len() - 16
+            ));
         }
         lines.push(String::new());
     }
@@ -170,7 +177,10 @@ pub fn render_text(report: &ScanReport, width: usize, max_rows: usize) -> String
         if !market.available {
             lines.push(format!(
                 "  unavailable: {}",
-                market.unavailable_reason.as_deref().unwrap_or("unknown reason")
+                market
+                    .unavailable_reason
+                    .as_deref()
+                    .unwrap_or("unknown reason")
             ));
         } else {
             lines.push(format!(
@@ -262,6 +272,19 @@ mod tests {
             &request,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn rule_matches_header_width() {
+        for width in [40, 80, 160] {
+            let page = render_text(&report(), width, 10);
+            let lines: Vec<_> = page.lines().collect();
+            let rule = lines
+                .iter()
+                .position(|line| line.starts_with("---"))
+                .unwrap();
+            assert_eq!(lines[rule].width(), lines[rule - 1].width().min(width));
+        }
     }
 
     #[test]

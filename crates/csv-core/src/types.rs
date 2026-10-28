@@ -168,9 +168,7 @@ pub fn classify_date(raw: &str) -> Option<DateGuess> {
     if raw.is_empty() || raw.len() > 32 {
         return None;
     }
-    let separator = raw
-        .chars()
-        .find(|ch| matches!(ch, '-' | '/' | '.'))?;
+    let separator = raw.chars().find(|ch| matches!(ch, '-' | '/' | '.'))?;
     let parts: Vec<&str> = raw.split(separator).collect();
     if parts.len() != 3 {
         return None;
@@ -234,7 +232,9 @@ pub struct DateGuess {
 
 /// True when the only question is day/month order (e.g. `01/02/2024`).
 pub fn is_ambiguous_date(raw: &str) -> bool {
-    classify_date(raw).map(|guess| guess.ambiguous).unwrap_or(false)
+    classify_date(raw)
+        .map(|guess| guess.ambiguous)
+        .unwrap_or(false)
 }
 
 /// Classify a cell without changing it.
@@ -328,7 +328,12 @@ pub fn is_formula_like(raw: &str) -> bool {
                     rest.chars()
                         .skip_while(|ch| ch.is_ascii_digit() || *ch == '.')
                         .next()
-                        .map(|ch| matches!(ch, '+' | '-' | '*' | '/' | '^' | '&' | '%' | '(' | ')' | ':'))
+                        .map(|ch| {
+                            matches!(
+                                ch,
+                                '+' | '-' | '*' | '/' | '^' | '&' | '%' | '(' | ')' | ':'
+                            )
+                        })
                         .unwrap_or(false)
                 }
                 Some(_) => true,
@@ -416,7 +421,14 @@ mod tests {
         );
         assert_eq!(parse_date("2023-02-29", DateFormat::Ymd), None);
         assert_eq!(parse_date("29/02/24", DateFormat::Dmy), None);
-        assert_eq!(parse_date("2024-2-9", DateFormat::Ymd), Some(CivilDate { year: 2024, month: 2, day: 9 }));
+        assert_eq!(
+            parse_date("2024-2-9", DateFormat::Ymd),
+            Some(CivilDate {
+                year: 2024,
+                month: 2,
+                day: 9
+            })
+        );
     }
 
     #[test]

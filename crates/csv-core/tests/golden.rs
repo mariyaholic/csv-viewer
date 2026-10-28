@@ -26,8 +26,7 @@ fn parser_report_matches_the_reviewed_golden_file() {
     let expected: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&golden_path).unwrap()).unwrap();
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "golden report changed; review the source text and regenerate deliberately"
     );
 }

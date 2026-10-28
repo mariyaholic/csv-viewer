@@ -125,7 +125,9 @@ fn offset(current: usize, delta: isize, length: usize) -> usize {
     if delta.is_negative() {
         current.saturating_sub(delta.unsigned_abs())
     } else {
-        current.saturating_add(delta as usize).min(length.saturating_sub(1))
+        current
+            .saturating_add(delta as usize)
+            .min(length.saturating_sub(1))
     }
 }
 
