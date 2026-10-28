@@ -204,6 +204,9 @@ impl WorkerBackend {
                         if id != 1 {
                             return Err(format!("worker result for unexpected scan id {id}"));
                         }
+                        report.validate_invariants().map_err(|message| {
+                            format!("worker returned an invalid report: {message}")
+                        })?;
                         return Ok(report);
                     }
                     Some(WorkerMessage::Error { code, message, .. }) => {

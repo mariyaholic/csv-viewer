@@ -147,13 +147,17 @@ impl App {
         self.receiver = Some(receiver);
         self.scanning = true;
         self.message = Some("full scan running…".to_string());
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("csv-viewer-scan".to_string())
             .spawn(move || {
                 let result = scan_file(&path, &request).map_err(|error| error.to_string());
                 let _ = sender.send(result);
             })
-            .ok();
+        {
+            self.scanning = false;
+            self.receiver = None;
+            self.message = Some(format!("could not start full scan: {error}"));
+        }
     }
 
     pub fn poll_full_scan(&mut self) -> bool {

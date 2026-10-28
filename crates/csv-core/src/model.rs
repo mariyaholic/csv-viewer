@@ -167,6 +167,9 @@ impl ScanRequest {
         if let DialectChoice::Explicit(dialect) = &self.dialect {
             dialect.validate().map_err(ScanError::InvalidRequest)?;
         }
+        if let Some(market) = &self.market {
+            market.validate().map_err(ScanError::InvalidRequest)?;
+        }
         Ok(())
     }
 }

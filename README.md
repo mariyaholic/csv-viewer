@@ -83,7 +83,9 @@ cargo run -p csv-viewer -- --render --delimiter ';' --encoding windows-1252 \
 Settings are per-user JSON (`%APPDATA%\csv-viewer\settings.json` on Windows,
 `$XDG_CONFIG_HOME/csv-viewer/settings.json` or
 `~/.config/csv-viewer/settings.json` elsewhere). `CSV_VIEWER_SETTINGS` and
-`--settings` select an explicit file. Settings hold dialect overrides, preview
+`--settings` select an explicit file. `CSV_VIEWER_WORKER` overrides the worker
+path used by embedders; the COM handler looks for `csv-worker.exe` next to the
+DLL. Settings hold dialect overrides, preview
 size and an optional market field mapping. They never contain credentials; do
 not put any in them.
 

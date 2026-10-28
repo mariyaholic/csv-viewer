@@ -17,7 +17,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Once, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -569,7 +569,7 @@ impl Drop for PreviewObject {
 unsafe fn ensure_window_class() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
-        let class_name = wide("CsvViewerPreview");
+        let class_name = CLASS_NAME.get_or_init(|| wide("CsvViewerPreview"));
         let window_class = WNDCLASSW {
             style: 0,
             lpfnWndProc: Some(preview_window_proc),
@@ -743,6 +743,8 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
     });
     object.refresh_text();
 }
+
+static CLASS_NAME: OnceLock<Vec<u16>> = OnceLock::new();
 
 unsafe extern "system" fn preview_window_proc(
     window: HWND,
