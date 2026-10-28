@@ -1,0 +1,16 @@
+[package]
+name = "csv-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Constrained CSV scan worker"
+
+[dependencies]
+csvview-core = { path = "../csv-core" }
+csv-protocol = { path = "../csv-protocol" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
