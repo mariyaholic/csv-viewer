@@ -28,6 +28,7 @@ pub enum WarningCode {
     QuotedMultiline,
     LongField,
     ReplacementErrors,
+    WarningLimitReached,
 }
 
 impl WarningCode {
@@ -37,7 +38,8 @@ impl WarningCode {
             | WarningCode::LinkLikeText
             | WarningCode::LongField
             | WarningCode::HeaderEmpty
-            | WarningCode::HeaderDuplicate => Severity::Info,
+            | WarningCode::HeaderDuplicate
+            | WarningCode::WarningLimitReached => Severity::Info,
             _ => Severity::Warning,
         }
     }
@@ -86,6 +88,9 @@ impl WarningCode {
             WarningCode::ReplacementErrors => {
                 "Some bytes were not valid for the selected encoding and were replaced while decoding."
             }
+            WarningCode::WarningLimitReached => {
+                "Additional review notes were omitted to keep this report bounded."
+            }
         }
     }
 }
@@ -117,6 +122,9 @@ pub struct Warning {
 
 const MAX_SAMPLES: usize = 3;
 const MAX_SAMPLE_CHARS: usize = 200;
+/// Bound the number of warning groups so a pathological file cannot make the
+/// report (and worker frame) unbounded.
+const MAX_WARNING_GROUPS: usize = 4096;
 
 #[derive(Debug, Clone, Default)]
 pub struct WarningCollector {
@@ -164,9 +172,28 @@ impl WarningCollector {
         value: &str,
         message: Option<String>,
     ) {
+        let key = (column, code);
+        if !self.entries.contains_key(&key) && self.entries.len() >= MAX_WARNING_GROUPS {
+            if code != WarningCode::WarningLimitReached {
+                let overflow = self
+                    .entries
+                    .entry((None, WarningCode::WarningLimitReached))
+                    .or_insert_with(|| Warning {
+                        code: WarningCode::WarningLimitReached,
+                        severity: WarningCode::WarningLimitReached.severity(),
+                        column: None,
+                        column_name: None,
+                        occurrences: 0,
+                        message: WarningCode::WarningLimitReached.message().to_string(),
+                        samples: Vec::new(),
+                    });
+                overflow.occurrences += occurrences;
+            }
+            return;
+        }
         let entry = self
             .entries
-            .entry((column, code))
+            .entry(key)
             .or_insert_with(|| Warning {
                 code,
                 severity: code.severity(),
@@ -241,6 +268,19 @@ mod tests {
         assert_eq!(warnings[1].code, WarningCode::FormulaLikeText);
         assert_eq!(warnings[2].occurrences, 2);
         assert_eq!(warnings[2].column_name.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn warning_groups_are_bounded() {
+        let mut collector = WarningCollector::new();
+        for index in 0..5000 {
+            collector.add(Some(index), WarningCode::LeadingZeros, 1, "007");
+        }
+        let warnings = collector.finish(&[]);
+        assert!(warnings.len() <= MAX_WARNING_GROUPS + 1);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.code == WarningCode::WarningLimitReached));
     }
 
     #[test]

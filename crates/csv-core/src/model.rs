@@ -50,6 +50,9 @@ pub struct ScanLimits {
     pub deadline_ms: Option<u64>,
     pub max_field_chars: usize,
     pub max_columns: usize,
+    /// Bound on all preview cell characters in the report. This keeps the
+    /// worker protocol frame bounded even for wide, long-valued files.
+    pub max_preview_chars: usize,
 }
 
 impl Default for ScanLimits {
@@ -60,6 +63,7 @@ impl Default for ScanLimits {
             deadline_ms: None,
             max_field_chars: 4096,
             max_columns: 1024,
+            max_preview_chars: 1024 * 1024,
         }
     }
 }
@@ -73,6 +77,7 @@ impl ScanLimits {
             deadline_ms: Some(5_000),
             max_field_chars: 2048,
             max_columns: 512,
+            max_preview_chars: 512 * 1024,
         }
     }
 
@@ -85,6 +90,7 @@ impl ScanLimits {
             deadline_ms: Some(120_000),
             max_field_chars: 4096,
             max_columns: 1024,
+            max_preview_chars: 1024 * 1024,
         }
     }
 }
@@ -151,6 +157,11 @@ impl ScanRequest {
         if self.limits.max_columns == 0 {
             return Err(ScanError::InvalidRequest(
                 "max_columns must be greater than zero".to_string(),
+            ));
+        }
+        if self.limits.max_preview_chars < 1024 {
+            return Err(ScanError::InvalidRequest(
+                "max_preview_chars must be at least 1024".to_string(),
             ));
         }
         if let DialectChoice::Explicit(dialect) = &self.dialect {

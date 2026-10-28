@@ -233,7 +233,8 @@ pub struct MarketAccumulator {
     unavailable_reason: Option<String>,
     sample_rows: u64,
     missing_rows: u64,
-    spread_values: Vec<f64>,
+    high_low_values: Vec<f64>,
+    spread_column_values: Vec<f64>,
     prev_close: Option<f64>,
     open_previous_pairs: u64,
     open_equals: u64,
@@ -259,7 +260,8 @@ impl MarketAccumulator {
             unavailable_reason,
             sample_rows: 0,
             missing_rows: 0,
-            spread_values: Vec::new(),
+            high_low_values: Vec::new(),
+            spread_column_values: Vec::new(),
             prev_close: None,
             open_previous_pairs: 0,
             open_equals: 0,
@@ -286,17 +288,23 @@ impl MarketAccumulator {
             self.missing_rows += 1;
             return;
         };
-        if fields.spread.is_some() && parse_price(fields.spread.and_then(|i| row.get(i))).is_none() {
+        let spread_value = fields.spread.and_then(|index| parse_price(row.get(index)));
+        if fields.spread.is_some() && spread_value.is_none() {
             self.missing_rows += 1;
         }
-        if fields.volume.is_some() && parse_price(fields.volume.and_then(|i| row.get(i))).is_none() {
+        if fields.volume.is_some() && parse_price(fields.volume.and_then(|index| row.get(index))).is_none() {
             self.missing_rows += 1;
         }
         self.sample_rows += 1;
 
         let max_return_sample = self.request.thresholds.max_return_sample;
-        if self.spread_values.len() < max_return_sample {
-            self.spread_values.push(high - low);
+        if self.high_low_values.len() < max_return_sample {
+            self.high_low_values.push(high - low);
+        }
+        if let Some(spread) = spread_value {
+            if self.spread_column_values.len() < max_return_sample {
+                self.spread_column_values.push(spread);
+            }
         }
         if self.closes.len() < max_return_sample {
             self.closes.push(close);
@@ -357,16 +365,14 @@ impl MarketAccumulator {
             };
         }
 
-        let spread_min = self
-            .spread_values
-            .iter()
-            .copied()
-            .reduce(f64::min);
-        let spread_max = self
-            .spread_values
-            .iter()
-            .copied()
-            .reduce(f64::max);
+        let using_spread_column = !self.spread_column_values.is_empty();
+        let spread_source = if using_spread_column {
+            &self.spread_column_values
+        } else {
+            &self.high_low_values
+        };
+        let spread_min = spread_source.iter().copied().reduce(f64::min);
+        let spread_max = spread_source.iter().copied().reduce(f64::max);
         let return_sample_size = self.returns.len() as u64;
         let (return_mean, return_stddev) = mean_stddev(&self.returns);
         let return_max_abs = self
@@ -411,7 +417,11 @@ impl MarketAccumulator {
                 findings.push(MarketFinding {
                     code: MarketFindingCode::ConstantSpread,
                     severity: MarketSeverity::Warning,
-                    message: "High minus low is constant within tolerance.".to_string(),
+                    message: if using_spread_column {
+                        "The mapped spread is constant within tolerance.".to_string()
+                    } else {
+                        "High minus low is constant within tolerance.".to_string()
+                    },
                     count: self.sample_rows,
                     sample_size: self.sample_rows,
                     threshold: thresholds.constant_spread_tolerance,
@@ -511,7 +521,7 @@ impl MarketAccumulator {
             metrics: MarketMetrics {
                 valid_rows: self.sample_rows,
                 missing_rows: self.missing_rows,
-                spread_rows: self.spread_values.len() as u64,
+                spread_rows: spread_source.len() as u64,
                 spread_min,
                 spread_max,
                 open_previous_pairs: self.open_previous_pairs,

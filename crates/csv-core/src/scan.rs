@@ -435,6 +435,7 @@ struct ScanState<'a> {
     dates: Vec<DateAccumulator>,
     market: Option<MarketAccumulator>,
     header_raw: Vec<String>,
+    preview_chars: usize,
     data_records: u64,
     rows: u64,
     bytes: u64,
@@ -469,6 +470,7 @@ impl<'a> ScanState<'a> {
             dates,
             market: None,
             header_raw: Vec::new(),
+            preview_chars: 0,
             data_records: 0,
             rows: 0,
             bytes: 0,
@@ -490,8 +492,12 @@ impl<'a> ScanState<'a> {
     }
 
     fn set_header(&mut self, raw: &[String]) {
-        self.header_raw = raw.to_vec();
-        let names = header_names(raw, self.request.limits.max_columns, &mut self.warnings);
+        let raw: Vec<String> = raw
+            .iter()
+            .map(|cell| truncate_chars(cell, 200).0)
+            .collect();
+        self.header_raw = raw.clone();
+        let names = header_names(&raw, self.request.limits.max_columns, &mut self.warnings);
         self.install_columns(names);
     }
 
@@ -565,6 +571,10 @@ impl<'a> ScanState<'a> {
 
         let mut preview_cells = Vec::with_capacity(column_count);
         let mut preview_truncated = false;
+        let max_preview_chars = self.request.limits.max_preview_chars;
+        let mut preview_open = self.preview.len() < self.request.preview_rows
+            && self.preview_chars < max_preview_chars;
+        let started_preview = preview_open;
 
         for index in 0..column_count {
             let raw = cells.get(index).map(String::as_str).unwrap_or("");
@@ -635,18 +645,26 @@ impl<'a> ScanState<'a> {
                 }
             }
 
-            let (display, truncated) = truncate_chars(raw, self.request.limits.max_field_chars);
-            if truncated {
+            let field_too_long = chars > self.request.limits.max_field_chars;
+            if field_too_long {
                 self.warnings
                     .add(Some(index), WarningCode::LongField, record, "");
             }
-            if self.preview.len() < self.request.preview_rows {
-                preview_cells.push(display);
-                preview_truncated |= truncated;
+            if preview_open {
+                let (display, _) = truncate_chars(raw, self.request.limits.max_field_chars);
+                let cell_chars = display.chars().count();
+                if self.preview_chars + cell_chars > max_preview_chars {
+                    preview_truncated = true;
+                    preview_open = false;
+                } else {
+                    self.preview_chars += cell_chars;
+                    preview_cells.push(display);
+                    preview_truncated |= field_too_long;
+                }
             }
         }
 
-        if self.preview.len() < self.request.preview_rows {
+        if started_preview {
             self.preview.push(PreviewRow {
                 record,
                 line,
@@ -862,7 +880,7 @@ fn header_names(
             warnings.add(Some(index), WarningCode::HeaderEmpty, 0, value);
             format!("column_{}", index + 1)
         } else {
-            trimmed.to_string()
+            truncate_chars(trimmed, 200).0
         };
         let count = seen.entry(name.clone()).or_insert(0);
         *count += 1;
@@ -988,6 +1006,38 @@ mod tests {
         assert!(!report.header.present);
         assert_eq!(report.total_records, Some(2));
         assert_eq!(report.preview_rows[0].cells[0], "a");
+    }
+
+    #[test]
+    fn preview_char_budget_is_bounded() {
+        let mut text = String::from("value\n");
+        for _ in 0..100 {
+            text.push_str(&"x".repeat(500));
+            text.push('\n');
+        }
+        let mut request = ScanRequest::preview();
+        request.preview_rows = 100;
+        request.limits.max_records = Some(100);
+        request.limits.max_bytes = None;
+        request.limits.max_preview_chars = 1024;
+        let report = scan_text(&text, &request);
+        let total: usize = report
+            .preview_rows
+            .iter()
+            .flat_map(|row| row.cells.iter())
+            .map(|cell| cell.chars().count())
+            .sum();
+        assert!(total <= 1024 + 500, "preview budget was {total}");
+        assert!(!report.preview_rows.is_empty());
+    }
+
+    #[test]
+    fn header_text_is_bounded_in_the_report() {
+        let long = "h".repeat(1000);
+        let text = format!("{long},b\n1,2\n");
+        let report = scan_text(&text, &ScanRequest::full());
+        assert!(report.columns[0].name.chars().count() <= 200);
+        assert!(report.header.raw[0].chars().count() <= 200);
     }
 
     #[test]

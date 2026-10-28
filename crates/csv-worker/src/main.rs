@@ -393,6 +393,7 @@ fn cap_request(request: &mut ScanRequest, config: &Config) {
     );
     limits.max_field_chars = limits.max_field_chars.min(1_000_000);
     limits.max_columns = limits.max_columns.min(4096);
+    limits.max_preview_chars = limits.max_preview_chars.clamp(1024, 2 * 1024 * 1024);
     request.preview_rows = request.preview_rows.min(1000);
 }
 
