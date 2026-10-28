@@ -220,7 +220,7 @@ fn column_widths(report: &ScanReport, width: usize, max_rows: usize) -> Vec<usiz
                 needed = needed.max(cell.width().min(30));
             }
         }
-        let needed = needed.min(30).max(4);
+        let needed = needed.clamp(4, 30);
         let spacing = if widths.is_empty() { 0 } else { 2 };
         let used: usize = widths.iter().sum::<usize>() + spacing * widths.len();
         if used + needed > available {

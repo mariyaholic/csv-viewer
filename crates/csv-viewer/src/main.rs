@@ -110,8 +110,10 @@ mod tests {
 
     #[test]
     fn cli_overrides_settings() {
-        let mut settings = Settings::default();
-        settings.delimiter = Some(';');
+        let settings = Settings {
+            delimiter: Some(';'),
+            ..Settings::default()
+        };
         let options = Options::parse(
             ["--delimiter", "|", "--encoding", "utf-16le", "x.csv"]
                 .into_iter()

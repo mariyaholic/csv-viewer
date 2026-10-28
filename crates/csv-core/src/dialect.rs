@@ -57,17 +57,12 @@ impl Dialect {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", content = "dialect", rename_all = "lowercase")]
 pub enum DialectChoice {
+    #[default]
     Auto,
     Explicit(Dialect),
-}
-
-impl Default for DialectChoice {
-    fn default() -> Self {
-        DialectChoice::Auto
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

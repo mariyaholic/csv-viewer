@@ -186,7 +186,7 @@ pub fn default_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let base = std::env::var_os("APPDATA")?;
-        return Some(PathBuf::from(base).join("csv-viewer").join("settings.json"));
+        Some(PathBuf::from(base).join("csv-viewer").join("settings.json"))
     }
     #[cfg(not(windows))]
     {
@@ -218,10 +218,12 @@ mod tests {
     fn roundtrip_through_disk() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        let mut settings = Settings::default();
-        settings.delimiter = Some(';');
-        settings.encoding = Some("windows-1252".to_string());
-        settings.header = Some(HeaderChoice::Absent);
+        let settings = Settings {
+            delimiter: Some(';'),
+            encoding: Some("windows-1252".to_string()),
+            header: Some(HeaderChoice::Absent),
+            ..Settings::default()
+        };
         settings.save(&path).unwrap();
         let (loaded, warnings) = Settings::load(Some(&path));
         assert_eq!(loaded, settings);
@@ -251,10 +253,12 @@ mod tests {
 
     #[test]
     fn choices_are_applied() {
-        let mut settings = Settings::default();
-        settings.delimiter = Some('\t');
-        settings.encoding = Some("utf-16le".to_string());
-        settings.header = Some(HeaderChoice::Present);
+        let settings = Settings {
+            delimiter: Some('\t'),
+            encoding: Some("utf-16le".to_string()),
+            header: Some(HeaderChoice::Present),
+            ..Settings::default()
+        };
         let mut request = ScanRequest::default();
         settings.apply_to(&mut request);
         assert_eq!(request.preview_rows, 200);
@@ -268,8 +272,10 @@ mod tests {
 
     #[test]
     fn invalid_values_are_rejected() {
-        let mut settings = Settings::default();
-        settings.preview_rows = 0;
+        let mut settings = Settings {
+            preview_rows: 0,
+            ..Settings::default()
+        };
         assert!(settings.validate().is_err());
         settings.preview_rows = 200;
         settings.encoding = Some("klingon".to_string());

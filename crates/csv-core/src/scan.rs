@@ -409,16 +409,9 @@ struct ScanEnd {
     parse_error: Option<String>,
 }
 
+#[derive(Default)]
 struct ColumnExtras {
     bool_spellings: BTreeMap<String, u64>,
-}
-
-impl Default for ColumnExtras {
-    fn default() -> Self {
-        Self {
-            bool_spellings: BTreeMap::new(),
-        }
-    }
 }
 
 struct DateAccumulator {

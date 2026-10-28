@@ -326,8 +326,7 @@ pub fn is_formula_like(raw: &str) -> bool {
                     // A plain signed number is data. A signed expression such
                     // as `-2+3` still looks like a formula to a spreadsheet.
                     rest.chars()
-                        .skip_while(|ch| ch.is_ascii_digit() || *ch == '.')
-                        .next()
+                        .find(|ch| !(ch.is_ascii_digit() || *ch == '.'))
                         .map(|ch| {
                             matches!(
                                 ch,

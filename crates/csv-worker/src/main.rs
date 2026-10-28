@@ -338,17 +338,16 @@ fn perform_scan(
         preview_only: false,
     };
     let result = scan_file_with_info(&path, info, &request, cancel, &mut |progress| {
-        if !progress_error {
-            if write_message(
+        if !progress_error
+            && write_message(
                 output,
                 &WorkerMessage::Progress { id, progress },
                 config.max_frame_bytes,
             )
             .is_err()
-            {
-                progress_error = true;
-                cancel.store(true, Ordering::SeqCst);
-            }
+        {
+            progress_error = true;
+            cancel.store(true, Ordering::SeqCst);
         }
     });
 

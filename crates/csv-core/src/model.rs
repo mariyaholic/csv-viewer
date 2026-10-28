@@ -16,31 +16,21 @@ use crate::market::{MarketReport, MarketRequest};
 use crate::types::{CellKind, DateFormat};
 use crate::warnings::Warning;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", content = "encoding", rename_all = "lowercase")]
 pub enum EncodingChoice {
+    #[default]
     Auto,
     Explicit(EncodingKind),
 }
 
-impl Default for EncodingChoice {
-    fn default() -> Self {
-        EncodingChoice::Auto
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HeaderChoice {
+    #[default]
     Auto,
     Present,
     Absent,
-}
-
-impl Default for HeaderChoice {
-    fn default() -> Self {
-        HeaderChoice::Auto
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -68,7 +68,7 @@ fn draw(app: &mut App, width: usize, height: usize) -> io::Result<()> {
     let mut status = format!(
         "{} · {} · header {} · {}",
         app.report.encoding.label,
-        format!("delimiter {:?}", app.report.dialect.delimiter),
+        format_args!("delimiter {:?}", app.report.dialect.delimiter),
         if app.report.header.present {
             "yes"
         } else {
@@ -185,7 +185,7 @@ fn render_table(app: &App, width: usize, body_rows: usize, lines: &mut Vec<Strin
                 needed = needed.max(sanitize_display(cell).width().min(30));
             }
         }
-        let needed = needed.min(30).max(5);
+        let needed = needed.clamp(5, 30);
         let used: usize = widths.iter().sum::<usize>() + 2 * widths.len();
         if used + needed > available {
             break;
