@@ -1174,9 +1174,6 @@ impl Registry for WindowsRegistry {
     fn write(&mut self, entry: &RegistryValue) -> Result<(), String> {
         unsafe { write_value(entry) }
     }
-    fn delete_empty_key(&mut self, key: &str) -> Result<(), String> {
-        unsafe { delete_empty_key(key) }
-    }
 }
 
 fn registry_path(key: &str) -> String {
@@ -1269,45 +1266,6 @@ unsafe fn delete_value(key: &str, name: Option<&str>) -> Result<(), String> {
     } else {
         Err(format!("RegDeleteValueW failed with {status}"))
     }
-}
-
-unsafe fn delete_empty_key(key: &str) -> Result<(), String> {
-    let full = wide(&registry_path(key));
-    let mut handle: HKEY = ptr::null_mut();
-    let status = RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle);
-    if status == 2 {
-        return Ok(());
-    }
-    if status != 0 {
-        return Err(format!("RegOpenKeyExW failed with {status}"));
-    }
-    let mut subkeys = 0;
-    let mut values = 0;
-    let status = RegQueryInfoKeyW(
-        handle,
-        ptr::null_mut(),
-        ptr::null_mut(),
-        ptr::null_mut(),
-        &mut subkeys,
-        ptr::null_mut(),
-        ptr::null_mut(),
-        &mut values,
-        ptr::null_mut(),
-        ptr::null_mut(),
-        ptr::null_mut(),
-        ptr::null_mut(),
-    );
-    RegCloseKey(handle);
-    if status != 0 {
-        return Err(format!("RegQueryInfoKeyW failed with {status}"));
-    }
-    if subkeys == 0 && values == 0 {
-        let status = RegDeleteKeyW(HKEY_CURRENT_USER, full.as_ptr());
-        if status != 0 && status != 2 {
-            return Err(format!("RegDeleteKeyW failed with {status}"));
-        }
-    }
-    Ok(())
 }
 
 unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, String> {
@@ -1533,21 +1491,6 @@ extern "system" {
         data: *mut u8,
         data_size: *mut DWORD,
     ) -> LONG;
-    fn RegQueryInfoKeyW(
-        key: HKEY,
-        class: *mut u16,
-        class_len: *mut DWORD,
-        reserved: *mut DWORD,
-        subkeys: *mut DWORD,
-        max_subkey_len: *mut DWORD,
-        max_class_len: *mut DWORD,
-        values: *mut DWORD,
-        max_value_name_len: *mut DWORD,
-        max_value_len: *mut DWORD,
-        security_descriptor: *mut DWORD,
-        last_write: *mut c_void,
-    ) -> LONG;
-    fn RegDeleteKeyW(key: HKEY, sub_key: LPCWSTR) -> LONG;
     fn RegDeleteValueW(key: HKEY, value_name: LPCWSTR) -> LONG;
     fn RegCloseKey(key: HKEY) -> LONG;
 }

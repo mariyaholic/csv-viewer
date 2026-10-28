@@ -120,7 +120,6 @@ pub trait Registry {
     fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, Self::Error>;
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), Self::Error>;
     fn write(&mut self, entry: &RegistryValue) -> Result<(), Self::Error>;
-    fn delete_empty_key(&mut self, key: &str) -> Result<(), Self::Error>;
 }
 
 /// Restore prior values after a failed write, unless another writer changed them.
@@ -183,20 +182,8 @@ pub fn unregister<R: Registry>(registry: &mut R, module_path: &str) -> Result<()
             }
         }
     }
-    // Only paths touched by registration are candidates, deepest first.
-    for key in [
-        format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
-        ".csv\\ShellEx".into(),
-        ".csv".into(),
-        format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
-        "SystemFileAssociations\\.csv\\ShellEx".into(),
-        "SystemFileAssociations\\.csv".into(),
-        format!("CLSID\\{CLSID_CSV_PREVIEW}\\InprocServer32"),
-        format!("CLSID\\{CLSID_CSV_PREVIEW}"),
-        PREVIEW_HANDLERS_KEY.into(),
-    ] {
-        registry.delete_empty_key(&key)?;
-    }
+    // Shared keys must remain: checking emptiness and deleting is not atomic.
+    // The exclusive CLSID tree could be deleted, but is also left in place.
     Ok(())
 }
 
@@ -236,7 +223,7 @@ mod tests {
         assert!(REGISTRATION_WARNING.contains("unregistration"));
     }
     #[test]
-    fn unregister_preserves_foreign_content_and_removes_empty_keys() {
+    fn unregister_preserves_shared_keys_and_foreign_content() {
         use std::collections::BTreeMap;
         #[derive(Default)]
         struct Fake(BTreeMap<String, BTreeMap<String, String>>);
@@ -275,31 +262,22 @@ mod tests {
                     .insert(entry.name.unwrap_or("").into(), entry.value.clone());
                 Ok(())
             }
-            fn delete_empty_key(&mut self, key: &str) -> Result<(), ()> {
-                let child = format!("{key}\\");
-                if self.0.get(key).is_some_and(|v| v.is_empty())
-                    && !self.0.keys().any(|k| k.starts_with(&child))
-                {
-                    self.0.remove(key);
-                }
-                Ok(())
-            }
         }
         let mut registry = Fake::default();
-        for entry in register_plan("module.dll") {
-            registry.key(&entry.key);
-            registry
-                .0
-                .get_mut(&entry.key)
-                .unwrap()
-                .insert(entry.name.unwrap_or("").into(), entry.value);
-        }
+        registry.key(".csv");
         registry
             .0
             .get_mut(".csv")
             .unwrap()
             .insert("".into(), "foreign default".into());
         registry.key("SystemFileAssociations\\.csv\\ShellEx\\Foreign");
+        registry.key(PREVIEW_HANDLERS_KEY);
+        registry
+            .0
+            .get_mut(PREVIEW_HANDLERS_KEY)
+            .unwrap()
+            .insert("Foreign".into(), "keep".into());
+        apply_plan(&mut registry, &register_plan("module.dll")).unwrap();
         let association =
             format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
         registry
@@ -314,21 +292,19 @@ mod tests {
             .unwrap()
             .insert("Foreign".into(), "keep".into());
         unregister(&mut registry, "module.dll").unwrap();
-        assert!(!registry
-            .0
-            .contains_key(&format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}")));
-        assert!(!registry.0.contains_key(".csv\\ShellEx"));
+        let csv_association = format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
+        assert!(registry.0[&csv_association].is_empty());
+        assert!(registry.0.contains_key(".csv\\ShellEx"));
         assert_eq!(registry.0[".csv"][""], "foreign default");
-        assert!(registry
-            .0
-            .contains_key("SystemFileAssociations\\.csv\\ShellEx"));
         assert!(registry
             .0
             .contains_key("SystemFileAssociations\\.csv\\ShellEx\\Foreign"));
         assert_eq!(registry.0[&association][""], "foreign handler");
-        assert!(!registry.0.contains_key(&format!("{clsid}\\InprocServer32")));
+        assert!(registry.0[&format!("{clsid}\\InprocServer32")].is_empty());
         assert_eq!(registry.0[&clsid]["Foreign"], "keep");
-        assert!(!registry.0.contains_key(PREVIEW_HANDLERS_KEY));
+        assert_eq!(registry.0[PREVIEW_HANDLERS_KEY]["Foreign"], "keep");
+        assert!(!registry.0[PREVIEW_HANDLERS_KEY].contains_key(CLSID_CSV_PREVIEW));
+        assert!(!registry.0[&clsid].contains_key("AppID"));
     }
     #[test]
     fn failed_registration_restores_prior_values() {
@@ -337,6 +313,7 @@ mod tests {
         struct Fake {
             values: BTreeMap<String, String>,
             writes: usize,
+            keys: std::collections::BTreeSet<String>,
         }
         impl Registry for Fake {
             type Error = &'static str;
@@ -348,14 +325,12 @@ mod tests {
                 if self.writes == 3 {
                     return Err("failed");
                 }
+                self.keys.insert(e.key.clone());
                 self.values.insert(e.key.clone(), e.value.clone());
                 Ok(())
             }
             fn delete_value(&mut self, k: &str, _: Option<&str>) -> Result<(), Self::Error> {
                 self.values.remove(k);
-                Ok(())
-            }
-            fn delete_empty_key(&mut self, _: &str) -> Result<(), Self::Error> {
                 Ok(())
             }
         }
@@ -365,14 +340,19 @@ mod tests {
             .enumerate()
             .take(3)
             .map(|(i, mut e)| {
-                e.key = i.to_string();
+                e.key = format!(".csv\\ShellEx\\{i}");
                 e
             })
             .collect();
-        fake.values.insert("0".into(), "previous".into());
+        fake.values
+            .insert(".csv\\ShellEx\\0".into(), "previous".into());
         assert_eq!(apply_plan(&mut fake, &plan), Err(("failed", vec![])));
-        assert_eq!(fake.values.get("0").map(String::as_str), Some("previous"));
-        assert!(!fake.values.contains_key("1"));
+        assert_eq!(
+            fake.values.get(".csv\\ShellEx\\0").map(String::as_str),
+            Some("previous")
+        );
+        assert!(!fake.values.contains_key(".csv\\ShellEx\\1"));
+        assert!(fake.keys.contains(".csv\\ShellEx\\1"));
     }
 
     #[test]
@@ -387,9 +367,6 @@ mod tests {
                 unreachable!()
             }
             fn write(&mut self, _: &RegistryValue) -> Result<(), Self::Error> {
-                unreachable!()
-            }
-            fn delete_empty_key(&mut self, _: &str) -> Result<(), Self::Error> {
                 unreachable!()
             }
         }
