@@ -4,16 +4,10 @@ Made by Maria. Apache-2.0.
 
 ## Linux (this machine)
 
-Last run 2026-10-28: `cargo test --workspace` → **114 passed, 0 failed,
-0 ignored**; `cargo build --workspace` and `cargo build --release --workspace`
-succeeded; `RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview` succeeded
-(type-check only).
-
-```sh
-cargo build --workspace
-cargo test --workspace
-RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview
-```
+Run offline with `CARGO_NET_OFFLINE=true cargo test --offline --workspace`.
+Run `cargo fmt --check`, `cargo clippy --offline --all-targets`, and
+`cargo build --offline --workspace`. Cross-compile and lint with target
+`x86_64-pc-windows-gnu`; cross-compilation does not exercise Windows behavior.
 
 Expected coverage:
 
@@ -56,9 +50,7 @@ mode confirm a partial preview has no “Total records” line.
 
 ## Real Windows testing required
 
-No Windows target, cross-compiler or Windows machine is available on this
-box. The following are **not** verified and must be exercised before any
-release:
+The following must be exercised on a real Windows PC before release:
 
 1. **Build/packaging**
    - Build x64 DLL and worker with a supported MSVC toolchain; confirm
@@ -92,11 +84,13 @@ release:
    - Confirm `DllRegisterServer` writes only
      `HKCU\Software\Classes\CLSID\{8f6a0f5e-3c4b-4a2e-9d7f-5b1c2e3a4f60}` and
      the `.csv`/`SystemFileAssociations\.csv` `ShellEx` values, with
-     `ThreadingModel=Apartment`.
+     `ThreadingModel=Apartment`, the prevhost `AppID`, `DisplayName`, and
+     the per-user `PreviewHandlers` value.
    - Install over a different existing CSV preview handler: registration must
      refuse (the installer must show the warning and ask first).
    - Unregister: only values still pointing at this handler are removed; a
-     handler installed later must survive.
+     handler installed later must survive. Empty keys currently remain because
+     their ownership is not tracked.
    - Test upgrade in place and uninstall; confirm Explorer restores the prior
      handler when safe.
    - Test optional MSIX registration and the standalone fallback if preview

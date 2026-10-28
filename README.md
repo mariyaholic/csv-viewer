@@ -6,9 +6,7 @@ Inspect a CSV in Explorer or a standalone window with an explicit account of par
 
 This is free and open source (Apache-2.0). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Status: v1 implementation, Linux build and tests passing. Windows COM code is
-implemented behind `cfg(windows)` but has **not** been compiled or exercised on
-a real Windows target on this machine. Releases are not code-signed yet.
+Windows binaries are not code-signed yet; Windows SmartScreen may warn when they are run.
 
 ## What v1 does
 
@@ -16,7 +14,7 @@ a real Windows target on this machine. Releases are not code-signed yet.
   supplies, never assumes a filesystem path, and renders a text preview with
   the source cells unchanged. Supports `IInitializeWithStream` and
   `IPreviewHandler`; registration is per-user under
-  `HKCU\Software\Classes`.
+  `HKCU\Software\Classes` and `HKCU\Software\Microsoft\Windows\CurrentVersion\PreviewHandlers`.
 - **Constrained worker:** a separate `csv-worker` process receives a path
   inside a private spool directory plus an exact byte count. The protocol is
   versioned and length-prefixed with a bounded frame size. Worker and request
@@ -116,10 +114,20 @@ not put any in them.
 
 The DLL/worker, registry plan and COM implementation live in
 `crates/csv-preview` behind `cfg(windows)`. They require a 64-bit Windows build
-and real Explorer testing; see [TESTING.md](TESTING.md) and
-[STATUS.md](STATUS.md). Registration is opt-in, warns before changing a
+and real Explorer testing; see [testing](docs/TESTING.md) and
+[status](STATUS.md). Registration is opt-in, warns before changing a
 preview association, and unregisters only values that still point to this
-handler.
+handler. Empty registry keys can remain after unregistration; see the testing
+notes before distributing the handler.
 
 See [ROADMAP.md](ROADMAP.md) for deliberately deferred work and
 [THIRD_PARTY.md](THIRD_PARTY.md) for the dependency inventory.
+
+## Windows builds
+
+Run `scripts/build-windows.ps1` on Windows with the x64 MSVC Rust target, or
+`scripts/build-windows.sh` on Linux with the x64 GNU target and MinGW. Both
+produce the viewer, worker, DLL and SHA256SUMS in `dist/`; set `DIST_DIR` for
+the shell script to choose another output directory. They use the last commit
+timestamp for `SOURCE_DATE_EPOCH` and remap source paths. Verify reproducibility
+with the same toolchain, dependencies, source and environment.

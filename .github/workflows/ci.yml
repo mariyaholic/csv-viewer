@@ -1,0 +1,17 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4 # TODO pin to commit SHA before publishing
+      - uses: dtolnay/rust-toolchain@1.85.0 # TODO pin to commit SHA before publishing
+        with:
+          toolchain: 1.85.0
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets
+      - run: cargo build --locked --workspace
+      - run: cargo test --locked --workspace
