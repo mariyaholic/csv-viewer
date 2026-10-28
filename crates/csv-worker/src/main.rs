@@ -550,7 +550,10 @@ mod tests {
     #[test]
     fn accepts_a_regular_file_inside_the_spool() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("spool.csv");
+        // Production canonicalizes the spool directory at startup; do the same here so the
+        // comparison also holds on Windows, where canonical paths use the `\\?\` form.
+        let spool_dir = directory.path().canonicalize().unwrap();
+        let path = spool_dir.join("spool.csv");
         std::fs::write(&path, b"a,b\n").unwrap();
         let source = SourceSpec {
             path: path.to_string_lossy().into_owned(),
@@ -558,10 +561,10 @@ mod tests {
             truncated: false,
         };
         let config = Config {
-            spool_dir: directory.path().to_path_buf(),
+            spool_dir: spool_dir.clone(),
             ..config()
         };
-        assert!(validate_source(&source, directory.path(), &config).is_ok());
+        assert!(validate_source(&source, &spool_dir, &config).is_ok());
     }
 
     #[test]
