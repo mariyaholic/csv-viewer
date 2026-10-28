@@ -189,7 +189,7 @@ pub fn scan_with_progress<R: Read>(
             end.parse_error = Some(error.to_string());
         }
     }
-    state.update_bytes(stats.source_read());
+    state.update_bytes(stats.source_offset(csv_reader.position().byte()));
 
     while end.parse_error.is_none() && !end.complete {
         if cancel.load(Ordering::Relaxed) {
@@ -222,12 +222,13 @@ pub fn scan_with_progress<R: Read>(
                 state.rows += 1;
                 state.data_records += 1;
                 state.process_row(&cells, state.data_records, line);
-                state.update_bytes(stats.source_read());
+                state.update_bytes(stats.source_offset(csv_reader.position().byte()));
                 if state.data_records % 1_000 == 0 {
                     state.emit_progress(stats.source_read());
                 }
             }
             Ok(false) => {
+                state.update_bytes(stats.source_read());
                 end.complete = true;
             }
             Err(error) => {
@@ -243,7 +244,11 @@ pub fn scan_with_progress<R: Read>(
         end.parse_error = Some("unterminated quoted field at end of source".to_string());
     }
 
-    let final_bytes = stats.source_read();
+    let final_bytes = if end.complete && !info.truncated && !info.preview_only {
+        info.total_bytes.unwrap_or_else(|| stats.source_read())
+    } else {
+        state.bytes.max(stats.source_offset(csv_reader.position().byte()))
+    };
     state.update_bytes(final_bytes);
     state.emit_progress(final_bytes);
 
@@ -939,6 +944,8 @@ mod tests {
         assert_eq!(report.incomplete_reason, Some(IncompleteReason::RecordLimit));
         assert_eq!(report.total_records, None);
         assert_eq!(report.scanned.data_records, 1);
+        assert!(report.scanned.bytes > 0);
+        assert!(report.scanned.bytes < 12, "partial coverage must not claim the whole source");
     }
 
     #[test]

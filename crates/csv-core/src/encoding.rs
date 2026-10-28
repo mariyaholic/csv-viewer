@@ -9,7 +9,7 @@
 
 use std::io::{self, BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use encoding_rs::{CoderResult, Decoder, Encoding, UTF_16BE, UTF_16LE, UTF_8, WINDOWS_1252};
 use serde::{Deserialize, Serialize};
@@ -174,10 +174,25 @@ pub fn decode_sample(bytes: &[u8], kind: EncodingKind) -> (String, bool) {
 }
 
 /// Shared counters filled by a [`DecodeReader`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DecodeStats {
     source_read: Arc<AtomicU64>,
     replacement_chunks: Arc<AtomicU64>,
+    /// `(decoded UTF-8 offset, source bytes consumed)` boundaries. Used to
+    /// estimate how much of the source a record covered when a scan stops
+    /// before EOF; interpolation is exact for ASCII/UTF-8 and approximate for
+    /// multi-byte encodings.
+    boundaries: Arc<Mutex<Vec<(u64, u64)>>>,
+}
+
+impl Default for DecodeStats {
+    fn default() -> Self {
+        Self {
+            source_read: Arc::new(AtomicU64::new(0)),
+            replacement_chunks: Arc::new(AtomicU64::new(0)),
+            boundaries: Arc::new(Mutex::new(vec![(0, 0)])),
+        }
+    }
 }
 
 impl DecodeStats {
@@ -187,6 +202,42 @@ impl DecodeStats {
 
     pub fn replacement_chunks(&self) -> u64 {
         self.replacement_chunks.load(Ordering::Relaxed)
+    }
+
+    fn record_boundary(&self, decoded: u64, source: u64) {
+        if let Ok(mut boundaries) = self.boundaries.lock() {
+            if boundaries.last().map(|(d, _)| *d) != Some(decoded) || source > 0 {
+                boundaries.push((decoded, source));
+            }
+        }
+    }
+
+    /// Estimate the source offset corresponding to a decoded byte offset.
+    pub fn source_offset(&self, decoded: u64) -> u64 {
+        let source_read = self.source_read();
+        let boundaries = match self.boundaries.lock() {
+            Ok(boundaries) => boundaries,
+            Err(_) => return source_read,
+        };
+        if boundaries.len() < 2 {
+            return source_read;
+        }
+        let index = boundaries
+            .partition_point(|(offset, _)| *offset <= decoded)
+            .saturating_sub(1);
+        let (decoded_start, source_start) = boundaries[index];
+        if let Some((decoded_end, source_end)) = boundaries.get(index + 1).copied() {
+            if decoded_end > decoded_start {
+                let span = decoded_end - decoded_start;
+                let delta = decoded.saturating_sub(decoded_start).min(span);
+                return (source_start
+                    + (delta as u128 * (source_end - source_start) as u128 / span as u128) as u64)
+                    .min(source_read);
+            }
+            source_end.min(source_read)
+        } else {
+            source_read
+        }
     }
 }
 
@@ -203,6 +254,7 @@ pub struct DecodeReader<R: Read> {
     flushed: bool,
     finished: bool,
     stats: DecodeStats,
+    decoded_total: u64,
     buffer_size: usize,
 }
 
@@ -219,6 +271,7 @@ impl<R: Read> DecodeReader<R> {
             flushed: false,
             finished: false,
             stats,
+            decoded_total: 0,
             buffer_size: 64 * 1024,
         }
     }
@@ -264,7 +317,12 @@ impl<R: Read> DecodeReader<R> {
             self.input_pos += read;
             if written > 0 {
                 self.output.extend_from_slice(&scratch[..written]);
+                self.decoded_total += written as u64;
             }
+            let pending = self.input.len().saturating_sub(self.input_pos) as u64;
+            let source_consumed = self.stats.source_read().saturating_sub(pending);
+            self.stats
+                .record_boundary(self.decoded_total, source_consumed);
             if had_errors {
                 self.stats
                     .replacement_chunks
