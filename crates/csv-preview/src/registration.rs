@@ -113,6 +113,45 @@ pub fn association_keys() -> Vec<String> {
         .collect()
 }
 
+/// Registry operations needed by unregistration. Missing keys and values are
+/// represented as `None` or success; other failures must be returned.
+pub trait Registry {
+    type Error;
+    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, Self::Error>;
+    fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), Self::Error>;
+    fn delete_empty_key(&mut self, key: &str) -> Result<(), Self::Error>;
+}
+
+pub fn unregister<R: Registry>(registry: &mut R, module_path: &str) -> Result<(), R::Error> {
+    for entry in register_plan(module_path) {
+        if let Some(existing) = registry.read(&entry.key, entry.name)? {
+            let matches = match entry.expected {
+                ExpectedValue::Clsid => existing.eq_ignore_ascii_case(CLSID_CSV_PREVIEW),
+                ExpectedValue::ModulePath => existing.eq_ignore_ascii_case(&entry.value),
+                ExpectedValue::Static(value) => existing == value,
+            };
+            if matches {
+                registry.delete_value(&entry.key, entry.name)?;
+            }
+        }
+    }
+    // Only paths touched by registration are candidates, deepest first.
+    for key in [
+        format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+        ".csv\\ShellEx".into(),
+        ".csv".into(),
+        format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+        "SystemFileAssociations\\.csv\\ShellEx".into(),
+        "SystemFileAssociations\\.csv".into(),
+        format!("CLSID\\{CLSID_CSV_PREVIEW}\\InprocServer32"),
+        format!("CLSID\\{CLSID_CSV_PREVIEW}"),
+        PREVIEW_HANDLERS_KEY.into(),
+    ] {
+        registry.delete_empty_key(&key)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +186,109 @@ mod tests {
         assert!(REGISTRATION_WARNING.contains("preview handler"));
         assert!(REGISTRATION_WARNING.contains("another preview handler"));
         assert!(REGISTRATION_WARNING.contains("unregistration"));
+    }
+    #[test]
+    fn unregister_preserves_foreign_content_and_removes_empty_keys() {
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        struct Fake(BTreeMap<String, BTreeMap<String, String>>);
+        impl Fake {
+            fn key(&mut self, path: &str) {
+                let mut current = String::new();
+                for part in path.split('\\') {
+                    if !current.is_empty() {
+                        current.push('\\');
+                    }
+                    current.push_str(part);
+                    self.0.entry(current.clone()).or_default();
+                }
+            }
+        }
+        impl Registry for Fake {
+            type Error = ();
+            fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, ()> {
+                Ok(self
+                    .0
+                    .get(key)
+                    .and_then(|v| v.get(name.unwrap_or("")))
+                    .cloned())
+            }
+            fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), ()> {
+                if let Some(values) = self.0.get_mut(key) {
+                    values.remove(name.unwrap_or(""));
+                }
+                Ok(())
+            }
+            fn delete_empty_key(&mut self, key: &str) -> Result<(), ()> {
+                let child = format!("{key}\\");
+                if self.0.get(key).is_some_and(|v| v.is_empty())
+                    && !self.0.keys().any(|k| k.starts_with(&child))
+                {
+                    self.0.remove(key);
+                }
+                Ok(())
+            }
+        }
+        let mut registry = Fake::default();
+        for entry in register_plan("module.dll") {
+            registry.key(&entry.key);
+            registry
+                .0
+                .get_mut(&entry.key)
+                .unwrap()
+                .insert(entry.name.unwrap_or("").into(), entry.value);
+        }
+        registry
+            .0
+            .get_mut(".csv")
+            .unwrap()
+            .insert("".into(), "foreign default".into());
+        registry.key("SystemFileAssociations\\.csv\\ShellEx\\Foreign");
+        let association =
+            format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
+        registry
+            .0
+            .get_mut(&association)
+            .unwrap()
+            .insert("".into(), "foreign handler".into());
+        let clsid = format!("CLSID\\{CLSID_CSV_PREVIEW}");
+        registry
+            .0
+            .get_mut(&clsid)
+            .unwrap()
+            .insert("Foreign".into(), "keep".into());
+        unregister(&mut registry, "module.dll").unwrap();
+        assert!(!registry
+            .0
+            .contains_key(&format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}")));
+        assert!(!registry.0.contains_key(".csv\\ShellEx"));
+        assert_eq!(registry.0[".csv"][""], "foreign default");
+        assert!(registry
+            .0
+            .contains_key("SystemFileAssociations\\.csv\\ShellEx"));
+        assert!(registry
+            .0
+            .contains_key("SystemFileAssociations\\.csv\\ShellEx\\Foreign"));
+        assert_eq!(registry.0[&association][""], "foreign handler");
+        assert!(!registry.0.contains_key(&format!("{clsid}\\InprocServer32")));
+        assert_eq!(registry.0[&clsid]["Foreign"], "keep");
+        assert!(!registry.0.contains_key(PREVIEW_HANDLERS_KEY));
+    }
+    #[test]
+    fn unregister_propagates_registry_errors() {
+        struct Failing;
+        impl Registry for Failing {
+            type Error = &'static str;
+            fn read(&mut self, _: &str, _: Option<&str>) -> Result<Option<String>, Self::Error> {
+                Err("read failed")
+            }
+            fn delete_value(&mut self, _: &str, _: Option<&str>) -> Result<(), Self::Error> {
+                unreachable!()
+            }
+            fn delete_empty_key(&mut self, _: &str) -> Result<(), Self::Error> {
+                unreachable!()
+            }
+        }
+        assert_eq!(unregister(&mut Failing, "module.dll"), Err("read failed"));
     }
 }

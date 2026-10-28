@@ -25,7 +25,7 @@ use csvview_core::text::render_text;
 use csvview_core::{ScanReport, ScanRequest, Settings};
 
 use crate::registration::{
-    register_plan, ExpectedValue, RegistryValue, CLSID_CSV_PREVIEW, PREVIEW_HANDLERS_KEY,
+    register_plan, unregister, Registry, RegistryValue, CLSID_CSV_PREVIEW, PREVIEW_HANDLERS_KEY,
 };
 use crate::{PreviewConfig, PreviewSession, SessionPhase, WorkerBackend};
 
@@ -1099,17 +1099,31 @@ fn register_module(module: &str, force: bool) -> HRESULT {
 }
 
 fn unregister_module() -> HRESULT {
-    unsafe {
-        let module = module_path()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        for entry in register_plan(&module) {
-            if value_matches(&entry) {
-                let _ = delete_value(&entry.key, entry.name);
-            }
+    let module = match unsafe { module_path() } {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => return E_FAIL,
+    };
+    match unregister(&mut WindowsRegistry, &module) {
+        Ok(()) => S_OK,
+        Err(error) => {
+            eprintln!("csv-preview: unregistration failed: {error}");
+            E_FAIL
         }
-        // Do not delete keys whose creation cannot be attributed to this install.
-        S_OK
+    }
+}
+
+struct WindowsRegistry;
+
+impl Registry for WindowsRegistry {
+    type Error = String;
+    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, String> {
+        unsafe { read_value(key, name) }
+    }
+    fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), String> {
+        unsafe { delete_value(key, name) }
+    }
+    fn delete_empty_key(&mut self, key: &str) -> Result<(), String> {
+        unsafe { delete_empty_key(key) }
     }
 }
 
@@ -1185,19 +1199,18 @@ unsafe fn write_value(entry: &RegistryValue) -> Result<(), String> {
     }
 }
 
-unsafe fn delete_value(key: &str, name: Option<&'static str>) -> Result<(), String> {
+unsafe fn delete_value(key: &str, name: Option<&str>) -> Result<(), String> {
     let full = wide(&registry_path(key));
     let mut handle: HKEY = ptr::null_mut();
-    if RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_WRITE, &mut handle) != 0 {
+    let status = RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_WRITE, &mut handle);
+    if status == 2 {
         return Ok(());
     }
+    if status != 0 {
+        return Err(format!("RegOpenKeyExW failed with {status}"));
+    }
     let name = name.map(wide);
-    let status = RegDeleteValueW(
-        handle,
-        name.as_ref()
-            .map(|name| name.as_ptr())
-            .unwrap_or(ptr::null()),
-    );
+    let status = RegDeleteValueW(handle, name.as_ref().map_or(ptr::null(), |n| n.as_ptr()));
     RegCloseKey(handle);
     if status == 0 || status == 2 {
         Ok(())
@@ -1206,61 +1219,105 @@ unsafe fn delete_value(key: &str, name: Option<&'static str>) -> Result<(), Stri
     }
 }
 
-unsafe fn value_matches(entry: &RegistryValue) -> bool {
-    let Some(existing) = read_value(&entry.key, entry.name) else {
-        return false;
-    };
-    match entry.expected {
-        ExpectedValue::Clsid => existing.eq_ignore_ascii_case(CLSID_CSV_PREVIEW),
-        ExpectedValue::ModulePath => existing.eq_ignore_ascii_case(&entry.value),
-        ExpectedValue::Static(value) => existing == value,
-    }
-}
-
-unsafe fn read_value(key: &str, name: Option<&str>) -> Option<String> {
+unsafe fn delete_empty_key(key: &str) -> Result<(), String> {
     let full = wide(&registry_path(key));
     let mut handle: HKEY = ptr::null_mut();
-    if RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle) != 0 {
-        return None;
+    let status = RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle);
+    if status == 2 {
+        return Ok(());
+    }
+    if status != 0 {
+        return Err(format!("RegOpenKeyExW failed with {status}"));
+    }
+    let mut subkeys = 0;
+    let mut values = 0;
+    let status = RegQueryInfoKeyW(
+        handle,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+        &mut subkeys,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        &mut values,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+    );
+    RegCloseKey(handle);
+    if status != 0 {
+        return Err(format!("RegQueryInfoKeyW failed with {status}"));
+    }
+    if subkeys == 0 && values == 0 {
+        let status = RegDeleteKeyW(HKEY_CURRENT_USER, full.as_ptr());
+        if status != 0 && status != 2 {
+            return Err(format!("RegDeleteKeyW failed with {status}"));
+        }
+    }
+    Ok(())
+}
+
+unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, String> {
+    let full = wide(&registry_path(key));
+    let mut handle: HKEY = ptr::null_mut();
+    let status = RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle);
+    if status == 2 {
+        return Ok(None);
+    }
+    if status != 0 {
+        return Err(format!("RegOpenKeyExW failed with {status}"));
     }
     let name = name.map(wide);
-    let mut value_type = 0u32;
-    let mut length = 0u32;
+    let name_ptr = name.as_ref().map_or(ptr::null(), |n| n.as_ptr());
+    let mut value_type = 0;
+    let mut length = 0;
     let status = RegQueryValueExW(
         handle,
-        name.as_ref()
-            .map(|name| name.as_ptr())
-            .unwrap_or(ptr::null()),
+        name_ptr,
         ptr::null_mut(),
         &mut value_type,
         ptr::null_mut(),
         &mut length,
     );
-    if status != 0 || length == 0 {
+    if status != 0 {
         RegCloseKey(handle);
-        return None;
+        return if status == 2 {
+            Ok(None)
+        } else {
+            Err(format!("RegQueryValueExW failed with {status}"))
+        };
+    }
+    if value_type != REG_SZ {
+        RegCloseKey(handle);
+        return Ok(None);
     }
     let mut buffer = vec![0u8; length as usize];
     let status = RegQueryValueExW(
         handle,
-        name.as_ref()
-            .map(|name| name.as_ptr())
-            .unwrap_or(ptr::null()),
+        name_ptr,
         ptr::null_mut(),
         &mut value_type,
         buffer.as_mut_ptr(),
         &mut length,
     );
     RegCloseKey(handle);
-    if status != 0 {
-        return None;
+    if status == 2 {
+        return Ok(None);
     }
+    if status != 0 {
+        return Err(format!("RegQueryValueExW failed with {status}"));
+    }
+    if value_type != REG_SZ {
+        return Ok(None);
+    }
+    buffer.truncate(length as usize);
     let utf16: Vec<u16> = buffer
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .take_while(|unit| *unit != 0)
         .collect();
-    Some(String::from_utf16_lossy(&utf16))
+    Ok(Some(String::from_utf16_lossy(&utf16)))
 }
 
 /// Create a key and any missing parents.
@@ -1420,6 +1477,21 @@ extern "system" {
         data: *mut u8,
         data_size: *mut DWORD,
     ) -> LONG;
+    fn RegQueryInfoKeyW(
+        key: HKEY,
+        class: *mut u16,
+        class_len: *mut DWORD,
+        reserved: *mut DWORD,
+        subkeys: *mut DWORD,
+        max_subkey_len: *mut DWORD,
+        max_class_len: *mut DWORD,
+        values: *mut DWORD,
+        max_value_name_len: *mut DWORD,
+        max_value_len: *mut DWORD,
+        security_descriptor: *mut DWORD,
+        last_write: *mut c_void,
+    ) -> LONG;
+    fn RegDeleteKeyW(key: HKEY, sub_key: LPCWSTR) -> LONG;
     fn RegDeleteValueW(key: HKEY, value_name: LPCWSTR) -> LONG;
     fn RegCloseKey(key: HKEY) -> LONG;
 }
