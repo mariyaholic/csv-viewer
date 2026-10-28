@@ -68,11 +68,10 @@ The following must be exercised on a real Windows PC before release:
      network share.
    - Verify `IInitializeWithStream` rejects write modes and handles `IStream`
      `Read`/`Stat` failures.
-   - **Apartment/stream lifetime:** the preview session reads the head on the
-     COM caller and copies the rest on a bounded spool thread. Confirm the
-     Explorer stream remains valid and legal to read for that lifetime on the
-     tested Windows versions; if not, marshal it with the GIT or spool fully on
-     the caller.
+   - **Apartment/stream lifetime:** the caller copies the stream to a bounded
+     temporary file before passing a file handle to the spool thread. Verify COM
+     calls and releases occur on the owning apartment, test read errors and a
+     slow stream. The synchronous copy may delay Explorer up to the spool cap.
    - Change selection while a full scan is running: the old session must
      cancel and the new preview must appear.
    - Kill `csv-worker.exe` mid-scan and confirm a failure/timeout message, no
@@ -91,6 +90,9 @@ The following must be exercised on a real Windows PC before release:
    - Unregister: only values still pointing at this handler are removed; a
      handler installed later must survive. Candidate keys are removed bottom-up
      only when they have no values or subkeys; verify foreign content survives.
+     The empty check and deletion are separate calls and can race concurrent
+     writers; deletion ownership is not persisted. Test rollback on failed
+     writes, including prior values and concurrent changes.
    - Test upgrade in place and uninstall; confirm Explorer restores the prior
      handler when safe.
    - Test optional MSIX registration and the standalone fallback if preview

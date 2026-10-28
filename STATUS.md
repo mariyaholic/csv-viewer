@@ -1,27 +1,25 @@
 # Status
 
-The workspace contains a read-only CSV parser, terminal viewer, worker and
-Windows Explorer preview-handler DLL. Version 0.1.0; 10,297 Rust source and test
-lines (including blank lines and comments). See [testing](docs/TESTING.md).
+Made by Maria. Apache-2.0.
 
-Offline verification, with `PATH=/home/box/.cargo/bin:$PATH`,
-`CARGO_NET_OFFLINE=true`, and `CARGO_TARGET_DIR` set to a scratch directory:
+The CSV viewer, parser, bounded preview session, worker, protocol and Windows
+Explorer handler are built. Explorer stream transfer now copies on the COM
+caller; registry rollback and client-sized rendering have been added.
+
+Offline verification with Cargo bin on PATH and `CARGO_NET_OFFLINE=true`:
 
 - `cargo fmt --check`: passed.
-- `cargo test --offline`: passed, 116 tests, 0 failed, 0 ignored.
-- `cargo build --offline`: passed in the prior verification.
-- `cargo clippy --offline --all-targets`: passed with warnings in the prior verification.
-- `cargo clippy --offline --all-targets --target x86_64-pc-windows-gnu`:
-  passed with warnings.
-- `cargo build --offline --release --target x86_64-pc-windows-gnu`: passed.
-- `cargo test --offline --no-run --target x86_64-pc-windows-gnu`: passed;
-  test binaries were not executed (prior verification).
-- `DIST_DIR=/tmp/terra-review/07a-csv-viewer/dist scripts/build-windows.sh`:
-  passed in the prior verification and produced three binaries and SHA256SUMS.
+- `cargo test --offline`: 118 passed, 0 failed.
+- `cargo build --offline`: passed.
+- `cargo clippy --offline --all-targets`: passed with 4 warning lines.
+- `cargo clippy --offline --all-targets --target x86_64-pc-windows-gnu`: passed with 32 warning lines.
+- `cargo build --offline --target x86_64-pc-windows-gnu`: passed.
+- `cargo test --offline --no-run --target x86_64-pc-windows-gnu`: passed; binaries not executed.
+- `cargo deny --offline check licenses` and Linux/Windows target-filtered checks: passed.
 
-Real Windows Explorer, COM stream threading, registration conflicts and cleanup,
-DPI, resizing, worker failure and packaging still need testing. Unregistration
-removes matching values and cleans up candidate keys only when empty. Registration
-errors can leave partial values. The preview COM stream's cross-thread use requires
-marshalling review. The text preview currently uses a fixed layout width in the
-Explorer host. See `docs/TESTING.md` before distribution.
+Rust source files total 10,463 lines (including tests, measured by `wc -l`).
+Real Windows checks and open issues are listed in docs/TESTING.md: synchronous
+stream copying can delay the host; registry rollback and empty-key deletion can
+race concurrent changes, and ownership of created keys is not persisted. Visual
+layout, stream apartment/lifetime, registry behavior, packaging and deployment
+remain unverified on Windows. Clippy retains FFI naming and enum-size warnings.
