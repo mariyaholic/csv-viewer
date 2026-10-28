@@ -98,6 +98,9 @@ not put any in them.
   makes the result partial.
 - Spool: private temporary directory, 4 GiB cap. If the source is larger, the
   spool is truncated and scans are partial; the source itself is untouched.
+- Partial byte coverage is estimated at record boundaries; for multi-byte
+  encodings it is interpolated, not an exact byte count. Record counts are
+  exact for the records parsed, and a complete scan has an exact byte total.
 - The source is opened read-only. Labels are treated as text: formulas are
   never evaluated and links are never opened.
 - No network access, no telemetry, no uploads. Network use is not required at

@@ -144,5 +144,9 @@ None of these have been run here. The full checklist is in `TESTING.md`:
     data licence in addition to MIT/Apache (build-time only). See
     `THIRD_PARTY.md` for the release-review note. No GPL-only dependency is
     used.
-12. **No network publishing** was performed. All commits are local; no git
+12. **Partial byte coverage** is estimated at record boundaries. UTF-8 is
+    exact; UTF-16/Windows-1252 coverage is interpolated because decoded size
+    differs from source size. Completeness and record counts are unaffected;
+    complete scans use the exact total.
+13. **No network publishing** was performed. All commits are local; no git
     remote, push, upload, telemetry or runtime network use.
