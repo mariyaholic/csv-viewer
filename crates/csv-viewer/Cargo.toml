@@ -1,0 +1,13 @@
+[package]
+name = "csv-viewer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Small companion CSV viewer with an explicit scan-coverage display"
+
+[dependencies]
+csvview-core = { path = "../csv-core" }
+crossterm.workspace = true
+unicode-width.workspace = true
