@@ -1,0 +1,22 @@
+[package]
+name = "csvview-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CSV detection, parsing, scan coverage and review warnings"
+
+[lib]
+name = "csvview_core"
+
+[dependencies]
+encoding_rs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+csv.workspace = true
+tempfile.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

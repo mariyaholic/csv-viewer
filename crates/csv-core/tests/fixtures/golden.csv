@@ -1,0 +1,5 @@
+id,name,amount,when,active,note
+007,Ada,12.50,01/02/2024,true,"line one
+line two"
+00042,Grace,13.00,03/04/2024,1,=SUM(A2:A3)
+12345678901234567890,Linus,0.50,2024-12-31,FALSE,"see https://example.invalid"

@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: Apache-2.0
+
+use std::path::{Path, PathBuf};
+
+use csvview_core::{
+    scan_file, DateFormat, DateRangeRequest, DateRangeStatus, HeaderChoice, ScanRequest,
+    WarningCode,
+};
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(name)
+}
+
+fn scan(name: &str, request: &ScanRequest) -> csvview_core::ScanReport {
+    scan_file(&fixture(name), request).unwrap()
+}
+
+#[test]
+fn detects_utf8_bom_and_utf16_fixtures() {
+    let report = scan("utf8_bom.csv", &ScanRequest::full());
+    assert_eq!(report.encoding.label, "utf-8");
+    assert!(report.encoding.bom);
+    assert_eq!(report.columns[0].name, "name");
+
+    let report = scan("utf16le_bom.csv", &ScanRequest::full());
+    assert_eq!(report.encoding.label, "utf-16le");
+    assert!(report.encoding.bom);
+    assert_eq!(report.total_records, Some(1));
+
+    let report = scan("utf16be_bom.csv", &ScanRequest::full());
+    assert_eq!(report.encoding.label, "utf-16be");
+    assert!(report.encoding.bom);
+    assert_eq!(report.total_records, Some(1));
+}
+
+#[test]
+fn decodes_windows_1252_without_replacing_text() {
+    let mut request = ScanRequest::full();
+    request.header = HeaderChoice::Present;
+    let report = scan("windows1252.csv", &request);
+    assert_eq!(report.encoding.label, "windows-1252");
+    assert!(!report.encoding.replacement_errors);
+    assert_eq!(report.preview_rows[0].cells[0], "André");
+    assert_eq!(report.preview_rows[0].cells[1], "Zürich");
+}
+
+#[test]
+fn detects_semicolon_tab_and_pipe() {
+    assert_eq!(scan("semicolon.csv", &ScanRequest::full()).dialect.delimiter, ';');
+    assert_eq!(scan("tab.tsv", &ScanRequest::full()).dialect.delimiter, '\t');
+    assert_eq!(scan("pipe.csv", &ScanRequest::full()).dialect.delimiter, '|');
+}
+
+#[test]
+fn preserves_quoted_multiline_cells() {
+    let report = scan("quoted_multiline.csv", &ScanRequest::full());
+    assert_eq!(report.total_records, Some(2));
+    assert_eq!(report.preview_rows[0].cells[1], "first\nsecond");
+    assert_eq!(report.preview_rows[1].cells[1], "third, with comma");
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == WarningCode::QuotedMultiline));
+}
+
+#[test]
+fn ragged_rows_extend_columns_and_warn() {
+    let report = scan("ragged.csv", &ScanRequest::full());
+    assert_eq!(report.columns.len(), 4);
+    assert_eq!(report.columns[3].name, "column_4");
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == WarningCode::RaggedRow));
+}
+
+#[test]
+fn empty_file_is_a_complete_zero_row_scan() {
+    let report = scan("empty.csv", &ScanRequest::full());
+    assert!(report.complete);
+    assert_eq!(report.total_records, Some(0));
+    assert!(report.columns.is_empty());
+    assert!(!report.header.present);
+}
+
+#[test]
+fn single_column_file_has_no_invented_header() {
+    let report = scan("single_column.csv", &ScanRequest::full());
+    assert_eq!(report.columns.len(), 1);
+    assert!(!report.header.present);
+    assert_eq!(report.total_records, Some(4));
+}
+
+#[test]
+fn crlf_file_is_complete() {
+    let report = scan("crlf.csv", &ScanRequest::full());
+    assert!(report.complete);
+    assert_eq!(report.total_records, Some(1));
+}
+
+#[test]
+fn malformed_quote_does_not_claim_completeness() {
+    let report = scan("unterminated_quote.csv", &ScanRequest::full());
+    assert!(!report.complete);
+    assert_eq!(report.total_records, None);
+    assert!(report.parse_error.is_some() || report.incomplete_reason.is_some());
+}
+
+#[test]
+fn complete_date_range_uses_the_requested_interpretation() {
+    let mut request = ScanRequest::full();
+    request.date_ranges.push(DateRangeRequest {
+        column: 0,
+        format: DateFormat::Ymd,
+    });
+    let report = scan("dates.csv", &request);
+    let range = &report.date_ranges[0];
+    assert_eq!(range.status, DateRangeStatus::Computed);
+    assert_eq!(range.min.as_deref(), Some("2024-01-01"));
+    assert_eq!(range.max.as_deref(), Some("2024-02-29"));
+    assert_eq!(range.parsed, 3);
+    assert_eq!(range.invalid, 0);
+}
+
+#[test]
+fn explicit_header_absent_keeps_all_rows_as_data() {
+    let mut request = ScanRequest::full();
+    request.header = HeaderChoice::Absent;
+    let report = scan("dates.csv", &request);
+    assert_eq!(report.total_records, Some(4));
+    assert_eq!(report.preview_rows[0].cells[0], "date");
+}

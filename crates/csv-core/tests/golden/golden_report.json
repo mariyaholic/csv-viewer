@@ -1,0 +1,313 @@
+{
+  "columns": [
+    {
+      "counts": {
+        "boolean": 0,
+        "date": 0,
+        "empty": 0,
+        "float": 0,
+        "integer": 3,
+        "text": 0
+      },
+      "index": 0,
+      "inferred": "integer",
+      "max_chars": 20,
+      "name": "id",
+      "samples": [
+        "007",
+        "00042",
+        "12345678901234567890"
+      ]
+    },
+    {
+      "counts": {
+        "boolean": 0,
+        "date": 0,
+        "empty": 0,
+        "float": 0,
+        "integer": 0,
+        "text": 3
+      },
+      "index": 1,
+      "inferred": "text",
+      "max_chars": 5,
+      "name": "name",
+      "samples": [
+        "Ada",
+        "Grace",
+        "Linus"
+      ]
+    },
+    {
+      "counts": {
+        "boolean": 0,
+        "date": 0,
+        "empty": 0,
+        "float": 3,
+        "integer": 0,
+        "text": 0
+      },
+      "index": 2,
+      "inferred": "float",
+      "max_chars": 5,
+      "name": "amount",
+      "samples": [
+        "12.50",
+        "13.00",
+        "0.50"
+      ]
+    },
+    {
+      "counts": {
+        "boolean": 0,
+        "date": 3,
+        "empty": 0,
+        "float": 0,
+        "integer": 0,
+        "text": 0
+      },
+      "index": 3,
+      "inferred": "date",
+      "max_chars": 10,
+      "name": "when",
+      "samples": [
+        "01/02/2024",
+        "03/04/2024",
+        "2024-12-31"
+      ]
+    },
+    {
+      "counts": {
+        "boolean": 2,
+        "date": 0,
+        "empty": 0,
+        "float": 0,
+        "integer": 1,
+        "text": 0
+      },
+      "index": 4,
+      "inferred": "text",
+      "max_chars": 5,
+      "name": "active",
+      "samples": [
+        "true",
+        "1",
+        "FALSE"
+      ]
+    },
+    {
+      "counts": {
+        "boolean": 0,
+        "date": 0,
+        "empty": 0,
+        "float": 0,
+        "integer": 0,
+        "text": 3
+      },
+      "index": 5,
+      "inferred": "text",
+      "max_chars": 27,
+      "name": "note",
+      "samples": [
+        "line one\nline two",
+        "=SUM(A2:A3)",
+        "see https://example.invalid"
+      ]
+    }
+  ],
+  "complete": true,
+  "date_ranges": [],
+  "dialect": {
+    "confidence": 100,
+    "delimiter": ",",
+    "quote": "\"",
+    "source": "auto"
+  },
+  "encoding": {
+    "bom": false,
+    "label": "utf-8",
+    "replacement_chunks": 0,
+    "replacement_errors": false,
+    "source": "auto"
+  },
+  "header": {
+    "columns": [
+      "id",
+      "name",
+      "amount",
+      "when",
+      "active",
+      "note"
+    ],
+    "present": true,
+    "raw": [
+      "id",
+      "name",
+      "amount",
+      "when",
+      "active",
+      "note"
+    ],
+    "source": "auto"
+  },
+  "incomplete_reason": null,
+  "market": null,
+  "parse_error": null,
+  "preview_rows": [
+    {
+      "cells": [
+        "007",
+        "Ada",
+        "12.50",
+        "01/02/2024",
+        "true",
+        "line one\nline two"
+      ],
+      "cells_truncated": false,
+      "line": 2,
+      "record": 1
+    },
+    {
+      "cells": [
+        "00042",
+        "Grace",
+        "13.00",
+        "03/04/2024",
+        "1",
+        "=SUM(A2:A3)"
+      ],
+      "cells_truncated": false,
+      "line": 4,
+      "record": 2
+    },
+    {
+      "cells": [
+        "12345678901234567890",
+        "Linus",
+        "0.50",
+        "2024-12-31",
+        "FALSE",
+        "see https://example.invalid"
+      ],
+      "cells_truncated": false,
+      "line": 5,
+      "record": 3
+    }
+  ],
+  "scanned": {
+    "bytes": 208,
+    "data_records": 3,
+    "rows": 4,
+    "source_truncated": false,
+    "total_bytes": 208
+  },
+  "total_records": 3,
+  "warnings": [
+    {
+      "code": "leading_zeros",
+      "column": 0,
+      "column_name": "id",
+      "message": "Values have leading zeros and may be treated as numbers by spreadsheet apps; source text is unchanged.",
+      "occurrences": 2,
+      "samples": [
+        {
+          "record": 1,
+          "value": "007"
+        },
+        {
+          "record": 2,
+          "value": "00042"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
+      "code": "long_number",
+      "column": 0,
+      "column_name": "id",
+      "message": "Numbers with more than 15 digits may lose precision in spreadsheet apps.",
+      "occurrences": 1,
+      "samples": [
+        {
+          "record": 3,
+          "value": "12345678901234567890"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
+      "code": "ambiguous_date",
+      "column": 3,
+      "column_name": "when",
+      "message": "Dates where day and month are both 12 or less can be read two ways; choose an interpretation explicitly.",
+      "occurrences": 2,
+      "samples": [
+        {
+          "record": 1,
+          "value": "01/02/2024"
+        },
+        {
+          "record": 2,
+          "value": "03/04/2024"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
+      "code": "boolean_spellings",
+      "column": 4,
+      "column_name": "active",
+      "message": "A column mixes boolean spellings (for example true/yes/1); they may be interpreted inconsistently.",
+      "occurrences": 3,
+      "samples": [
+        {
+          "record": 0,
+          "value": "1, false, true"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
+      "code": "formula_like_text",
+      "column": 5,
+      "column_name": "note",
+      "message": "Cells start with formula-like characters; they are rendered as text and never executed.",
+      "occurrences": 1,
+      "samples": [
+        {
+          "record": 2,
+          "value": "=SUM(A2:A3)"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
+      "code": "link_like_text",
+      "column": 5,
+      "column_name": "note",
+      "message": "Link-like text is shown literally and is never opened.",
+      "occurrences": 1,
+      "samples": [
+        {
+          "record": 3,
+          "value": "see https://example.invalid"
+        }
+      ],
+      "severity": "info"
+    },
+    {
+      "code": "quoted_multiline",
+      "column": 5,
+      "column_name": "note",
+      "message": "Quoted fields contain line breaks; they are preserved as text.",
+      "occurrences": 1,
+      "samples": [
+        {
+          "record": 1,
+          "value": "line one\\nline two"
+        }
+      ],
+      "severity": "info"
+    }
+  ]
+}
