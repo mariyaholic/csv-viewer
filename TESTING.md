@@ -4,7 +4,7 @@ Made by Maria. Apache-2.0.
 
 ## Linux (this machine)
 
-Last run 2026-10-28: `cargo test --workspace` → **112 passed, 0 failed,
+Last run 2026-10-28: `cargo test --workspace` → **114 passed, 0 failed,
 0 ignored**; `cargo build --workspace` and `cargo build --release --workspace`
 succeeded; `RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview` succeeded
 (type-check only).

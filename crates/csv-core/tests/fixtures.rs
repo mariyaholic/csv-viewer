@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use csvview_core::{
-    scan_file, DateFormat, DateRangeRequest, DateRangeStatus, HeaderChoice, ScanRequest,
-    WarningCode,
+    scan_file, DateFormat, DateRangeRequest, DateRangeStatus, Dialect, DialectChoice,
+    EncodingChoice, EncodingKind, HeaderChoice, ScanRequest, WarningCode,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -123,6 +123,56 @@ fn complete_date_range_uses_the_requested_interpretation() {
     assert_eq!(range.max.as_deref(), Some("2024-02-29"));
     assert_eq!(range.parsed, 3);
     assert_eq!(range.invalid, 0);
+}
+
+#[test]
+fn explicit_overrides_win_over_detection() {
+    let mut request = ScanRequest::full();
+    request.dialect = DialectChoice::Explicit(Dialect {
+        delimiter: ';',
+        ..Dialect::default()
+    });
+    request.header = HeaderChoice::Present;
+    let report = scan("semicolon.csv", &request);
+    assert_eq!(report.columns.len(), 2);
+    assert_eq!(report.columns[1].name, "value");
+
+    let mut request = ScanRequest::full();
+    request.encoding = EncodingChoice::Explicit(EncodingKind::Utf8);
+    request.header = HeaderChoice::Present;
+    let report = scan("windows1252.csv", &request);
+    assert!(report.encoding.replacement_errors);
+    assert!(report.preview_rows[0].cells[0].contains('\u{fffd}'));
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == WarningCode::ReplacementErrors));
+}
+
+#[test]
+fn huge_field_is_truncated_with_a_warning() {
+    let big = "x".repeat(200_000);
+    let text = format!("a,b\n1,{big}\n");
+    let mut request = ScanRequest::full();
+    request.header = HeaderChoice::Present;
+    request.limits.max_field_chars = 1024;
+    let report = scan_text(&text, &request);
+    assert!(report.complete);
+    assert_eq!(report.preview_rows[0].cells[1].chars().count(), 1024);
+    assert!(report.preview_rows[0].cells_truncated);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == WarningCode::LongField));
+}
+
+fn scan_text(text: &str, request: &ScanRequest) -> csvview_core::ScanReport {
+    csvview_core::scan(
+        std::io::Cursor::new(text.as_bytes().to_vec()),
+        csvview_core::InputInfo::known(text.len() as u64),
+        request,
+    )
+    .unwrap()
 }
 
 #[test]

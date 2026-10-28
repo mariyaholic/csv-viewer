@@ -42,7 +42,7 @@ Result: `Finished dev profile` — success, no warnings.
 cargo test --workspace
 ```
 
-Result: **112 tests passed, 0 failed, 0 ignored** across the workspace test
+Result: **114 tests passed, 0 failed, 0 ignored** across the workspace test
 targets (core unit/fixture/golden/market/warning tests, protocol tests, worker
 unit and pipe integration tests, preview session/backend tests, viewer tests,
 and doc tests).
@@ -81,7 +81,7 @@ UPDATE_GOLDEN=1 cargo test -p csvview-core --test golden
 
 ## Size
 
-- 9,815 lines of Rust under `crates/` (library, binaries, unit and integration
+- 9,865 lines of Rust under `crates/` (library, binaries, unit and integration
   tests), up from the empty scaffold.
 - 5 crates, 17 parser/market fixtures, 1 reviewed JSON golden report.
 - Architecture estimate was 1,000–2,000 changed LOC excluding review; the
