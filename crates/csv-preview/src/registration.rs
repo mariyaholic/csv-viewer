@@ -119,7 +119,55 @@ pub trait Registry {
     type Error;
     fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, Self::Error>;
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), Self::Error>;
+    fn write(&mut self, entry: &RegistryValue) -> Result<(), Self::Error>;
     fn delete_empty_key(&mut self, key: &str) -> Result<(), Self::Error>;
+}
+
+/// Restore prior values after a failed write, unless another writer changed them.
+/// Rollback errors are returned alongside the original failure.
+pub fn apply_plan<R: Registry>(
+    registry: &mut R,
+    plan: &[RegistryValue],
+) -> Result<(), (R::Error, Vec<R::Error>)> {
+    let mut written: Vec<(&RegistryValue, Option<String>)> = Vec::new();
+    for entry in plan {
+        let previous = match registry.read(&entry.key, entry.name) {
+            Ok(value) => value,
+            Err(error) => return Err((error, rollback(registry, written))),
+        };
+        if let Err(error) = registry.write(entry) {
+            return Err((error, rollback(registry, written)));
+        }
+        written.push((entry, previous));
+    }
+    Ok(())
+}
+
+fn rollback<R: Registry>(
+    registry: &mut R,
+    written: Vec<(&RegistryValue, Option<String>)>,
+) -> Vec<R::Error> {
+    let mut errors = Vec::new();
+    for (entry, previous) in written.into_iter().rev() {
+        match registry.read(&entry.key, entry.name) {
+            Ok(Some(current)) if current == entry.value => {
+                let result = match previous {
+                    Some(value) => {
+                        let mut old = entry.clone();
+                        old.value = value;
+                        registry.write(&old)
+                    }
+                    None => registry.delete_value(&entry.key, entry.name),
+                };
+                if let Err(error) = result {
+                    errors.push(error);
+                }
+            }
+            Ok(_) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    errors
 }
 
 pub fn unregister<R: Registry>(registry: &mut R, module_path: &str) -> Result<(), R::Error> {
@@ -219,6 +267,14 @@ mod tests {
                 }
                 Ok(())
             }
+            fn write(&mut self, entry: &RegistryValue) -> Result<(), ()> {
+                self.key(&entry.key);
+                self.0
+                    .get_mut(&entry.key)
+                    .unwrap()
+                    .insert(entry.name.unwrap_or("").into(), entry.value.clone());
+                Ok(())
+            }
             fn delete_empty_key(&mut self, key: &str) -> Result<(), ()> {
                 let child = format!("{key}\\");
                 if self.0.get(key).is_some_and(|v| v.is_empty())
@@ -275,6 +331,51 @@ mod tests {
         assert!(!registry.0.contains_key(PREVIEW_HANDLERS_KEY));
     }
     #[test]
+    fn failed_registration_restores_prior_values() {
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        struct Fake {
+            values: BTreeMap<String, String>,
+            writes: usize,
+        }
+        impl Registry for Fake {
+            type Error = &'static str;
+            fn read(&mut self, k: &str, _: Option<&str>) -> Result<Option<String>, Self::Error> {
+                Ok(self.values.get(k).cloned())
+            }
+            fn write(&mut self, e: &RegistryValue) -> Result<(), Self::Error> {
+                self.writes += 1;
+                if self.writes == 3 {
+                    return Err("failed");
+                }
+                self.values.insert(e.key.clone(), e.value.clone());
+                Ok(())
+            }
+            fn delete_value(&mut self, k: &str, _: Option<&str>) -> Result<(), Self::Error> {
+                self.values.remove(k);
+                Ok(())
+            }
+            fn delete_empty_key(&mut self, _: &str) -> Result<(), Self::Error> {
+                Ok(())
+            }
+        }
+        let mut fake = Fake::default();
+        let plan: Vec<_> = register_plan("module")
+            .into_iter()
+            .enumerate()
+            .take(3)
+            .map(|(i, mut e)| {
+                e.key = i.to_string();
+                e
+            })
+            .collect();
+        fake.values.insert("0".into(), "previous".into());
+        assert_eq!(apply_plan(&mut fake, &plan), Err(("failed", vec![])));
+        assert_eq!(fake.values.get("0").map(String::as_str), Some("previous"));
+        assert!(!fake.values.contains_key("1"));
+    }
+
+    #[test]
     fn unregister_propagates_registry_errors() {
         struct Failing;
         impl Registry for Failing {
@@ -283,6 +384,9 @@ mod tests {
                 Err("read failed")
             }
             fn delete_value(&mut self, _: &str, _: Option<&str>) -> Result<(), Self::Error> {
+                unreachable!()
+            }
+            fn write(&mut self, _: &RegistryValue) -> Result<(), Self::Error> {
                 unreachable!()
             }
             fn delete_empty_key(&mut self, _: &str) -> Result<(), Self::Error> {

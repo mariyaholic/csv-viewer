@@ -131,6 +131,16 @@ impl PreviewConfig {
     }
 }
 
+/// Copy a non-Send source on its owning thread into a bounded temporary file.
+/// The extra byte lets the normal spool detect truncation at the limit.
+pub fn copy_owned_source<R: Read>(source: R, limit: u64) -> io::Result<File> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = tempfile::tempfile()?;
+    io::copy(&mut source.take(limit.saturating_add(1)), &mut file)?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(file)
+}
+
 /// A full-scan implementation. Production uses the separate worker; tests and
 /// the companion viewer can use the in-process implementation.
 pub trait FullScanBackend: Send + Sync {
@@ -499,4 +509,16 @@ fn write_spool<R: Read>(
     file.flush()?;
     file.sync_data()?;
     Ok((bytes, truncated))
+}
+
+#[cfg(test)]
+mod owned_source_tests {
+    use super::*;
+    #[test]
+    fn copy_is_bounded_and_rewound() {
+        let mut file = copy_owned_source(&b"abcdef"[..], 3).unwrap();
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).unwrap();
+        assert_eq!(data, b"abcd");
+    }
 }

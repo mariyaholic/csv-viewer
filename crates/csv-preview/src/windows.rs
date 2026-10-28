@@ -25,7 +25,8 @@ use csvview_core::text::render_text;
 use csvview_core::{ScanReport, ScanRequest, Settings};
 
 use crate::registration::{
-    register_plan, unregister, Registry, RegistryValue, CLSID_CSV_PREVIEW, PREVIEW_HANDLERS_KEY,
+    apply_plan, register_plan, unregister, Registry, RegistryValue, CLSID_CSV_PREVIEW,
+    PREVIEW_HANDLERS_KEY,
 };
 use crate::{PreviewConfig, PreviewSession, SessionPhase, WorkerBackend};
 
@@ -61,6 +62,9 @@ const ERROR_ALREADY_EXISTS: HRESULT = 0x8007_00B7u32 as i32;
 
 const STGM_WRITE_BITS: u32 = 0x0000_0003;
 const STATFLAG_NONAME: u32 = 0x0000_0001;
+const WM_SIZE: UINT = 0x0005;
+const WM_DPICHANGED: UINT = 0x02E0;
+const LOGPIXELSY: i32 = 90;
 const WM_PAINT: UINT = 0x000F;
 const WM_ERASEBKGND: UINT = 0x0014;
 const WM_KEYDOWN: UINT = 0x0100;
@@ -95,6 +99,12 @@ const DLL_PROCESS_ATTACH: DWORD = 1;
 static LIVE_COM_OBJECTS: AtomicU32 = AtomicU32::new(0);
 static SERVER_LOCKS: AtomicU32 = AtomicU32::new(0);
 static DLL_INSTANCE: AtomicUsize = AtomicUsize::new(0);
+
+#[repr(C)]
+struct SIZE {
+    cx: i32,
+    cy: i32,
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,9 +419,7 @@ unsafe fn stream_release(stream: *mut c_void) {
     release(stream);
 }
 
-/// Reads an Explorer-supplied `IStream` on the bounded preview worker. The
-/// host must keep the stream valid for the lifetime of the handler; COM
-/// apartment/isolation behavior is on the real-Windows test checklist.
+/// Reads the Explorer stream only on the COM apartment that owns it.
 struct StreamReader {
     stream: *mut c_void,
 }
@@ -447,10 +455,6 @@ impl Read for StreamReader {
         }
     }
 }
-
-// The stream is consumed by one bounded spool thread. See TESTING.md for the
-// required apartment and stream-lifetime checks.
-unsafe impl Send for StreamReader {}
 
 impl Drop for StreamReader {
     fn drop(&mut self) {
@@ -629,14 +633,21 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
     settings.apply_to(&mut request);
     let reader = StreamReader::new(object.stream);
     let length_hint = stream_size_hint(object.stream);
-    let session =
-        match PreviewSession::start(reader, length_hint, &request, PreviewConfig::default()) {
-            Ok(session) => Arc::new(session),
-            Err(error) => {
-                object.set_error_text(&format!("CSV preview could not start: {error}"));
-                return E_FAIL;
-            }
-        };
+    let config = PreviewConfig::default();
+    let source = match crate::session::copy_owned_source(reader, config.max_spool_bytes) {
+        Ok(source) => source,
+        Err(error) => {
+            object.set_error_text(&format!("CSV preview could not read stream: {error}"));
+            return E_FAIL;
+        }
+    };
+    let session = match PreviewSession::start(source, length_hint, &request, config) {
+        Ok(session) => Arc::new(session),
+        Err(error) => {
+            object.set_error_text(&format!("CSV preview could not start: {error}"));
+            return E_FAIL;
+        }
+    };
     object.session = Some(session);
     object.refresh_text();
 
@@ -665,6 +676,7 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
     }
     object.window = window;
     SetWindowLongPtrW(window, GWLP_USERDATA, object as *mut PreviewObject as isize);
+    object.refresh_text();
     ShowWindow(window, SW_SHOW);
     UpdateWindow(window);
     S_OK
@@ -692,7 +704,29 @@ impl PreviewObject {
         let Some(report) = report else {
             return;
         };
-        let mut text = render_text(&report, 110, 38);
+        let mut width = 80usize;
+        if !self.window.is_null() {
+            let dc = GetDC(self.window);
+            if !dc.is_null() {
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(self.window, &mut client);
+                let old_font = if !self.font.is_null() {
+                    SelectObject(dc, self.font)
+                } else {
+                    ptr::null_mut()
+                };
+                let mut size = SIZE { cx: 0, cy: 0 };
+                let sample = wide("M");
+                if GetTextExtentPoint32W(dc, sample.as_ptr(), 1, &mut size) != 0 && size.cx > 0 {
+                    width = ((client.right - client.left - 16).max(1) / size.cx).max(1) as usize;
+                }
+                if !old_font.is_null() {
+                    SelectObject(dc, old_font);
+                }
+                ReleaseDC(self.window, dc);
+            }
+        }
+        let mut text = render_text(&report, width, 38);
         match snapshot.phase {
             SessionPhase::Scanning => text.push_str("\n\nFull scan running…"),
             SessionPhase::TimedOut => {
@@ -763,6 +797,16 @@ unsafe extern "system" fn preview_window_proc(
 ) -> LRESULT {
     let object = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut PreviewObject;
     match message {
+        WM_SIZE | WM_DPICHANGED => {
+            if !object.is_null() {
+                if message == WM_DPICHANGED && !(*object).font.is_null() {
+                    DeleteObject((*object).font);
+                    (*object).font = ptr::null_mut();
+                }
+                (*object).refresh_text();
+            }
+            DefWindowProcW(window, message, wparam, lparam)
+        }
         WM_PAINT => {
             paint_window(window, object);
             0
@@ -798,7 +842,7 @@ unsafe fn paint_window(window: HWND, object: *mut PreviewObject) {
         let object = &mut *object;
         if object.font.is_null() {
             object.font = CreateFontW(
-                -14,
+                -(14 * GetDeviceCaps(device, LOGPIXELSY).max(1) / 96).max(1),
                 0,
                 0,
                 0,
@@ -813,6 +857,7 @@ unsafe fn paint_window(window: HWND, object: *mut PreviewObject) {
                 FIXED_PITCH | FF_MODERN,
                 wide("Consolas").as_ptr(),
             );
+            object.refresh_text();
         }
         if object.brush.is_null() {
             object.brush = CreateSolidBrush(0x00FF_FFFF);
@@ -878,6 +923,8 @@ unsafe fn worker_path() -> Option<PathBuf> {
 }
 
 #[no_mangle]
+/// # Safety
+/// The caller must provide valid COM interface identifiers and output pointer.
 pub unsafe extern "system" fn DllGetClassObject(
     clsid: *const GUID,
     riid: *const GUID,
@@ -902,6 +949,8 @@ pub unsafe extern "system" fn DllGetClassObject(
 }
 
 #[no_mangle]
+/// # Safety
+/// Must be called according to the COM DLL lifetime contract.
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 && SERVER_LOCKS.load(Ordering::SeqCst) == 0 {
         S_OK
@@ -1088,11 +1137,11 @@ fn register_module(module: &str, force: bool) -> HRESULT {
                 }
             }
         }
-        for entry in &plan {
-            if let Err(error) = write_value(entry) {
-                eprintln!("csv-preview: registration failed: {error}");
-                return E_FAIL;
-            }
+        if let Err((error, rollback_errors)) = apply_plan(&mut WindowsRegistry, &plan) {
+            eprintln!(
+                "csv-preview: registration failed: {error}; rollback errors: {rollback_errors:?}"
+            );
+            return E_FAIL;
         }
         S_OK
     }
@@ -1121,6 +1170,9 @@ impl Registry for WindowsRegistry {
     }
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), String> {
         unsafe { delete_value(key, name) }
+    }
+    fn write(&mut self, entry: &RegistryValue) -> Result<(), String> {
+        unsafe { write_value(entry) }
     }
     fn delete_empty_key(&mut self, key: &str) -> Result<(), String> {
         unsafe { delete_empty_key(key) }
@@ -1382,6 +1434,8 @@ extern "system" {
 
 #[link(name = "user32")]
 extern "system" {
+    fn GetDC(window: HWND) -> HDC;
+    fn ReleaseDC(window: HWND, dc: HDC) -> i32;
     fn RegisterClassW(class: *const WNDCLASSW) -> u16;
     fn CreateWindowExW(
         ex_style: DWORD,
@@ -1418,6 +1472,8 @@ extern "system" {
 
 #[link(name = "gdi32")]
 extern "system" {
+    fn GetDeviceCaps(dc: HDC, index: i32) -> i32;
+    fn GetTextExtentPoint32W(dc: HDC, text: LPCWSTR, count: i32, size: *mut SIZE) -> BOOL;
     fn CreateFontW(
         height: i32,
         width: i32,
