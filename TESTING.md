@@ -4,6 +4,11 @@ Made by Maria. Apache-2.0.
 
 ## Linux (this machine)
 
+Last run 2026-10-28: `cargo test --workspace` → **112 passed, 0 failed,
+0 ignored**; `cargo build --workspace` and `cargo build --release --workspace`
+succeeded; `cargo check -p csv-preview --features windows-check` succeeded
+(type-check only).
+
 ```sh
 cargo build --workspace
 cargo test --workspace
