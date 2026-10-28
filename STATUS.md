@@ -142,8 +142,8 @@ None of these have been run here. The full checklist is in `TESTING.md`:
     not proof of fraud/authenticity and not financial advice. No MT5/trading
     calls exist.
 11. **Third-party review.** `unicode-ident` carries the permissive Unicode-3.0
-    data licence in addition to MIT/Apache; `r-efi` offers an LGPL option but is
-    used under MIT/Apache and is UEFI-target-only. See `THIRD_PARTY.md` for the
-    release-review note.
+    data licence in addition to MIT/Apache (build-time only). See
+    `THIRD_PARTY.md` for the release-review note. No GPL-only dependency is
+    used.
 12. **No network publishing** was performed. All commits are local; no git
     remote, push, upload, telemetry or runtime network use.
