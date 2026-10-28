@@ -4,7 +4,7 @@ Made by Maria
 
 Inspect a CSV in Explorer or a standalone window with an explicit account of parsing and scan coverage.
 
-Free and open source (Apache-2.0). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+This is free and open source (Apache-2.0). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 Status: v1 implementation, Linux build and tests passing. Windows COM code is
 implemented behind `cfg(windows)` but has **not** been compiled or exercised on
