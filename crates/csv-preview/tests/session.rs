@@ -239,3 +239,49 @@ fn slow_stream_preview_still_returns_a_head() {
     .unwrap();
     assert!(session.snapshot().preview.is_some());
 }
+
+/// A source that keeps producing slowly. A whole-stream copy would not return
+/// for seconds, so a head-only pipeline must return while almost all of the
+/// source is still unread.
+struct NeverReader {
+    remaining: u64,
+}
+
+impl Read for NeverReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 || buffer.is_empty() {
+            return Ok(0);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+        let take = buffer.len().min(self.remaining as usize);
+        buffer[..take].fill(b'x');
+        self.remaining -= take as u64;
+        Ok(take)
+    }
+}
+
+#[test]
+fn head_only_stream_preview_returns_promptly() {
+    // 256 MiB of slow source: the old eager full-stream copy could not return
+    // within a second; reading only the head returns in milliseconds.
+    let mut reader = NeverReader {
+        remaining: 256 * 1024 * 1024,
+    };
+    let request = ScanRequest::full();
+    let config = PreviewConfig::default();
+    let started = Instant::now();
+    let head = csv_preview::session::read_head(&mut reader, config.head_bytes).unwrap();
+    assert_eq!(head.len(), config.head_bytes);
+    let session = PreviewSession::start_with_head(head, reader, None, &request, config).unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        session.snapshot().preview.is_some(),
+        "the immediate preview must be published before the spool finishes"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the head-only pipeline took {elapsed:?}"
+    );
+    session.cancel();
+    assert!(session.wait_for_spool(Duration::from_secs(2)));
+}

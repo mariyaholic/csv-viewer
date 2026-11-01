@@ -62,6 +62,8 @@ const ERROR_ALREADY_EXISTS: HRESULT = 0x8007_00B7u32 as i32;
 
 const STGM_WRITE_BITS: u32 = 0x0000_0003;
 const STATFLAG_NONAME: u32 = 0x0000_0001;
+const COINIT_MULTITHREADED: u32 = 0x0;
+const COINIT_APARTMENTTHREADED: u32 = 0x2;
 const WM_SIZE: UINT = 0x0005;
 const WM_DPICHANGED: UINT = 0x02E0;
 const LOGPIXELSY: i32 = 90;
@@ -127,6 +129,7 @@ const fn guid(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> GUID {
 
 const IID_IUNKNOWN: GUID = guid(0x0000_0000, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 const IID_ICLASSFACTORY: GUID = guid(0x0000_0001, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
+const IID_ISTREAM: GUID = guid(0x0000_000C, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 const IID_IINITIALIZEWITHSTREAM: GUID = guid(
     0xB824_B49D,
     0x22AC,
@@ -463,6 +466,134 @@ impl Drop for StreamReader {
     }
 }
 
+/// A raw pointer that is explicitly moved between threads. Only used for a
+/// stream produced by `CoMarshalInterThreadInterfaceInStream`, which is
+/// designed to be read on another apartment.
+struct SendPtr(*mut c_void);
+
+unsafe impl Send for SendPtr {}
+
+/// Marshal the host stream so the session's spool thread can read it without
+/// the host apartment ever copying the whole file. Must be called on the
+/// apartment that owns `stream`; the result is consumed by
+/// [`unmarshal_stream`].
+unsafe fn marshal_stream(stream: *mut c_void) -> Result<*mut c_void, String> {
+    let mut marshalled: *mut c_void = ptr::null_mut();
+    let result = CoMarshalInterThreadInterfaceInStream(&IID_ISTREAM, stream, &mut marshalled);
+    if result < 0 || marshalled.is_null() {
+        return Err(format!(
+            "CoMarshalInterThreadInterfaceInStream failed: 0x{result:08X}"
+        ));
+    }
+    Ok(marshalled)
+}
+
+/// A stream unmarshalled onto the calling thread. Dropping it releases the
+/// stream and tears down the apartment this call initialized.
+struct UnmarshalledStream {
+    stream: *mut c_void,
+}
+
+// The pointer is only ever created and used on the thread that unmarshalled it
+// (`MarshalledReader::read` unmarshals lazily on the spool thread; the reader is
+// built with `stream: None` on the host apartment, so no live stream crosses a
+// thread boundary).
+unsafe impl Send for UnmarshalledStream {}
+
+unsafe fn unmarshal_stream(marshalled: *mut c_void) -> io::Result<UnmarshalledStream> {
+    let result = CoInitializeEx(ptr::null_mut(), COINIT_MULTITHREADED);
+    if result < 0 {
+        // The marshalled stream was never consumed; release it ourselves.
+        stream_release(marshalled);
+        return Err(io::Error::other(format!(
+            "CoInitializeEx failed: 0x{result:08X}"
+        )));
+    }
+    let mut stream: *mut c_void = ptr::null_mut();
+    let result = CoGetInterfaceAndReleaseStream(marshalled, &IID_ISTREAM, &mut stream);
+    if result < 0 {
+        // CoGetInterfaceAndReleaseStream released the marshalled stream.
+        CoUninitialize();
+        return Err(io::Error::other(format!(
+            "CoGetInterfaceAndReleaseStream failed: 0x{result:08X}"
+        )));
+    }
+    Ok(UnmarshalledStream { stream })
+}
+
+impl Read for UnmarshalledStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut read = 0u32;
+        let vtbl = unsafe { *(self.stream as *mut *const IStreamVtbl) };
+        let result = unsafe {
+            ((*vtbl).read)(
+                self.stream,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer.len().min(u32::MAX as usize) as u32,
+                &mut read,
+            )
+        };
+        if result < 0 {
+            Err(io::Error::other(format!(
+                "IStream::Read failed: 0x{result:08X}"
+            )))
+        } else {
+            Ok(read as usize)
+        }
+    }
+}
+
+impl Drop for UnmarshalledStream {
+    fn drop(&mut self) {
+        unsafe {
+            stream_release(self.stream);
+            CoUninitialize();
+        }
+    }
+}
+
+/// A host `IStream` marshalled for the session's spool thread. The stream is
+/// unmarshalled lazily on the first `read`, which is the thread that will read
+/// it, and released when this reader is dropped.
+struct MarshalledReader {
+    marshalled: SendPtr,
+    stream: Option<UnmarshalledStream>,
+}
+
+impl MarshalledReader {
+    unsafe fn new(marshalled: *mut c_void) -> Self {
+        Self {
+            marshalled: SendPtr(marshalled),
+            stream: None,
+        }
+    }
+}
+
+impl Read for MarshalledReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.stream.is_none() {
+            self.stream = Some(unsafe { unmarshal_stream(self.marshalled.0) }?);
+        }
+        self.stream
+            .as_mut()
+            .expect("unmarshalled above")
+            .read(buffer)
+    }
+}
+
+impl Drop for MarshalledReader {
+    fn drop(&mut self) {
+        if self.stream.is_none() {
+            // Never unmarshalled (for example the session was cancelled before
+            // the first read); release the marshalled stream directly.
+            unsafe { stream_release(self.marshalled.0) };
+        }
+    }
+}
+
 unsafe fn stream_size_hint(stream: *mut c_void) -> Option<u64> {
     if stream.is_null() {
         return None;
@@ -616,6 +747,35 @@ unsafe fn ensure_window_class() {
     });
 }
 
+/// Hand the rest of the host stream to a session without copying it twice.
+///
+/// A standard shell stream is marshalled so the session's spool thread reads it
+/// directly: one copy, off the host apartment. A stream that cannot be
+/// marshalled is read here within the spool cap as a fallback, keeping the
+/// previous behaviour for that rare case only.
+fn start_spooled_session(
+    reader: &mut StreamReader,
+    head: Vec<u8>,
+    total_bytes: Option<u64>,
+    request: &ScanRequest,
+    config: PreviewConfig,
+) -> Result<PreviewSession, crate::session::PreviewError> {
+    match unsafe { marshal_stream(reader.stream) } {
+        Ok(marshalled) => PreviewSession::start_with_head(
+            head,
+            unsafe { MarshalledReader::new(marshalled) },
+            total_bytes,
+            request,
+            config,
+        ),
+        Err(_) => {
+            let rest = crate::session::copy_owned_source(reader, config.max_spool_bytes)
+                .map_err(|error| crate::session::PreviewError::Io(error.to_string()))?;
+            PreviewSession::start_with_head(head, rest, total_bytes, request, config)
+        }
+    }
+}
+
 unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
     let object = &mut *object_from_this(this);
     if object.stream.is_null() || object.parent.is_null() {
@@ -635,14 +795,20 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
     let reader = StreamReader::new(object.stream);
     let length_hint = stream_size_hint(object.stream);
     let config = PreviewConfig::default();
-    let source = match crate::session::copy_owned_source(reader, config.max_spool_bytes) {
-        Ok(source) => source,
+
+    // Read only the bounded head here, on the host's own apartment, so the
+    // first screen appears promptly. The rest of the stream is read on the
+    // session's spool thread (marshalled across apartments), so this thread is
+    // never blocked for a whole-file copy.
+    let mut reader = reader;
+    let head = match crate::session::read_head(&mut reader, config.head_bytes) {
+        Ok(head) => head,
         Err(error) => {
             object.set_error_text(&format!("CSV preview could not read stream: {error}"));
             return E_FAIL;
         }
     };
-    let session = match PreviewSession::start(source, length_hint, &request, config) {
+    let session = match start_spooled_session(&mut reader, head, length_hint, &request, config) {
         Ok(session) => Arc::new(session),
         Err(error) => {
             object.set_error_text(&format!("CSV preview could not start: {error}"));
@@ -1408,6 +1574,22 @@ extern "system" {
     fn GetLastError() -> DWORD;
 }
 
+#[link(name = "ole32")]
+extern "system" {
+    fn CoInitializeEx(reserved: *mut c_void, co_init: u32) -> HRESULT;
+    fn CoUninitialize();
+    fn CoMarshalInterThreadInterfaceInStream(
+        riid: *const GUID,
+        object: *mut c_void,
+        stream: *mut *mut c_void,
+    ) -> HRESULT;
+    fn CoGetInterfaceAndReleaseStream(
+        stream: *mut c_void,
+        riid: *const GUID,
+        object: *mut *mut c_void,
+    ) -> HRESULT;
+}
+
 #[link(name = "user32")]
 extern "system" {
     fn GetDC(window: HWND) -> HDC;
@@ -1522,5 +1704,46 @@ mod tests {
         let guid = parse_guid(CLSID_CSV_PREVIEW).unwrap();
         assert_eq!(guid.data1, 0x8f6a0f5e);
         assert_eq!(guid.data4[7], 0x60);
+    }
+
+    #[link(name = "shlwapi")]
+    extern "system" {
+        fn SHCreateMemStream(init: *const u8, size: u32) -> *mut c_void;
+    }
+
+    /// The marshalling contract the fixed preview path relies on: a host stream
+    /// created on the host apartment is readable on another thread after
+    /// marshal/unmarshal, and the marshalled stream is consumed exactly once.
+    #[test]
+    fn a_host_stream_marshals_across_apartments() {
+        use std::io::Read;
+        let payload: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        let stream = unsafe { SHCreateMemStream(payload.as_ptr(), payload.len() as u32) };
+        assert!(!stream.is_null(), "SHCreateMemStream failed");
+        let initialised = unsafe { CoInitializeEx(ptr::null_mut(), COINIT_APARTMENTTHREADED) };
+        assert!(
+            initialised >= 0,
+            "CoInitializeEx failed: 0x{initialised:08X}"
+        );
+        let marshalled = unsafe { marshal_stream(stream) }.expect("marshal the host stream");
+        let pointer = SendPtr(marshalled);
+
+        let handle = std::thread::spawn(move || {
+            let mut reader = MarshalledReader {
+                marshalled: pointer,
+                stream: None,
+            };
+            let mut out = Vec::new();
+            reader
+                .read_to_end(&mut out)
+                .expect("read the marshalled stream");
+            out
+        });
+        let out = handle.join().unwrap();
+        assert_eq!(out, payload);
+        unsafe {
+            stream_release(stream);
+            CoUninitialize();
+        }
     }
 }

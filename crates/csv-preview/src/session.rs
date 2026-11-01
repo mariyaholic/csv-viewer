@@ -7,6 +7,11 @@
 //! private temporary spool with a hard byte cap. A full scan is a separate,
 //! explicitly requested operation executed by a [`FullScanBackend`] (normally
 //! the separate worker) and can be cancelled or timed out.
+//!
+//! Only the head is read on the calling thread; the rest is read on the
+//! session's own thread. [`PreviewSession::start_with_head`] lets the Windows
+//! handler read the head from the host apartment and then hand over a stream
+//! that is only safe to read on another thread (a marshalled COM stream).
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -195,8 +200,9 @@ pub struct PreviewSession {
 }
 
 impl PreviewSession {
-    /// Read a bounded head, publish the first preview immediately, and start
-    /// copying the rest of the stream into a private spool.
+    /// Read a bounded head from `source` on the calling thread, publish the
+    /// first preview immediately, and spool the rest on a private thread. The
+    /// calling thread never copies the whole stream.
     pub fn start<R: Read + Send + 'static>(
         mut source: R,
         total_bytes: Option<u64>,
@@ -205,6 +211,22 @@ impl PreviewSession {
     ) -> Result<Self, PreviewError> {
         config.validate()?;
         let head = read_head(&mut source, config.head_bytes)?;
+        Self::start_with_head(head, source, total_bytes, request, config)
+    }
+
+    /// As [`PreviewSession::start`], but with the head already read on the
+    /// calling thread. The Windows handler reads the head from the host stream
+    /// before marshalling the rest to this session's spool thread, so the host
+    /// apartment is never blocked for a whole-file copy. `source` must be
+    /// positioned immediately after `head`.
+    pub fn start_with_head<R: Read + Send + 'static>(
+        head: Vec<u8>,
+        source: R,
+        total_bytes: Option<u64>,
+        request: &ScanRequest,
+        config: PreviewConfig,
+    ) -> Result<Self, PreviewError> {
+        config.validate()?;
 
         let mut preview_request = request.clone();
         preview_request.preview_rows = config.preview_rows;
@@ -403,7 +425,9 @@ impl Drop for PreviewSession {
     }
 }
 
-fn read_head<R: Read>(source: &mut R, max: usize) -> Result<Vec<u8>, PreviewError> {
+/// Read at most `max` bytes from `source`. The Windows handler uses this to
+/// read the head on the host apartment before marshalling the rest.
+pub fn read_head<R: Read>(source: &mut R, max: usize) -> Result<Vec<u8>, PreviewError> {
     let mut head = Vec::with_capacity(max);
     let mut buffer = [0u8; 8192];
     while head.len() < max {
