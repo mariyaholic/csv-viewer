@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use csv_protocol::{
     read_message, write_message, ClientMessage, ErrorCode, SourceSpec, WorkerMessage,
     PROTOCOL_VERSION,
 };
-use csvview_core::{InputInfo, ScanLimits, ScanRequest};
+use csvview_core::{IncompleteReason, InputInfo, ScanLimits, ScanRequest};
 use tempfile::TempDir;
 
 struct Worker {
@@ -245,6 +246,70 @@ fn report_matches_in_process_scan() {
     )
     .unwrap();
     assert_eq!(remote, local);
+    worker.shutdown();
+}
+
+/// One record whose single field is far beyond `max_field_chars * 4`: the
+/// reader must stop inside the record instead of buffering the rest of the
+/// source whole (07A-04). Peak worker memory is measured manually on this
+/// PC; see docs/TESTING.md.
+#[test]
+fn worker_budget_reports_partial_with_huge_field() {
+    let spool = tempfile::tempdir().unwrap();
+    let mut worker = Worker::start(spool.path());
+    let path = spool.path().join("huge_field.csv");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(b"a,b\n1,\"").unwrap();
+    let chunk = [b'a'; 1 << 20];
+    for _ in 0..12 {
+        file.write_all(&chunk).unwrap();
+    }
+    file.write_all(b"\"\n").unwrap();
+    let bytes = std::fs::metadata(&path).unwrap().len();
+    let mut request = ScanRequest::full();
+    request.limits = ScanLimits {
+        // Large enough that only the field budget, not the byte limit,
+        // could stop this scan.
+        max_bytes: Some(64 * 1024 * 1024),
+        deadline_ms: Some(10_000),
+        ..ScanLimits::full()
+    };
+    let started = Instant::now();
+    worker.send(&ClientMessage::Scan {
+        id: 6,
+        source: SourceSpec {
+            path: path.to_string_lossy().into_owned(),
+            bytes,
+            truncated: false,
+        },
+        request,
+    });
+    assert_eq!(worker.receive(), WorkerMessage::Accepted { id: 6 });
+    let report = loop {
+        match worker.receive() {
+            WorkerMessage::Progress { .. } => {}
+            WorkerMessage::Result { id, report } => {
+                assert_eq!(id, 6);
+                break report;
+            }
+            other => panic!("unexpected message {other:?}"),
+        }
+    };
+    // Well under the 10 s deadline: the scan stops near the budget, not at
+    // the end of the source.
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!(!report.complete);
+    assert_eq!(report.incomplete_reason, Some(IncompleteReason::ParseError));
+    assert!(report
+        .parse_error
+        .as_deref()
+        .is_some_and(|error| error.contains("per-field byte budget")));
+    assert_eq!(report.scanned.data_records, 0);
+    report.validate_invariants().unwrap();
     worker.shutdown();
 }
 

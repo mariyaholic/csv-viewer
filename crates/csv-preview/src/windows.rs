@@ -63,7 +63,6 @@ const ERROR_ALREADY_EXISTS: HRESULT = 0x8007_00B7u32 as i32;
 const STGM_WRITE_BITS: u32 = 0x0000_0003;
 const STATFLAG_NONAME: u32 = 0x0000_0001;
 const COINIT_MULTITHREADED: u32 = 0x0;
-const COINIT_APARTMENTTHREADED: u32 = 0x2;
 const WM_SIZE: UINT = 0x0005;
 const WM_DPICHANGED: UINT = 0x02E0;
 const LOGPIXELSY: i32 = 90;
@@ -1698,6 +1697,8 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const COINIT_APARTMENTTHREADED: u32 = 0x2;
 
     #[test]
     fn parses_the_registration_clsid() {
