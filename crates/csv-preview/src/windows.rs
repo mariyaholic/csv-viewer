@@ -192,6 +192,24 @@ struct WNDCLASSW {
 }
 
 #[repr(C)]
+#[cfg(test)]
+#[allow(clippy::upper_case_acronyms)]
+struct WNDCLASSEXW {
+    cbSize: UINT,
+    style: UINT,
+    lpfnWndProc: Option<unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT>,
+    cbClsExtra: i32,
+    cbWndExtra: i32,
+    hInstance: HINSTANCE,
+    hIcon: *mut c_void,
+    hCursor: *mut c_void,
+    hbrBackground: *mut c_void,
+    lpszMenuName: LPCWSTR,
+    lpszClassName: LPCWSTR,
+    hIconSm: *mut c_void,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct FILETIME {
     dwLowDateTime: DWORD,
@@ -374,6 +392,11 @@ unsafe fn object_release(object: *mut PreviewObject) -> ULONG {
     if previous == 1 {
         LIVE_COM_OBJECTS.fetch_sub(1, Ordering::SeqCst);
         drop(Box::from_raw(object));
+        if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 {
+            // The last object is gone, so its windows are destroyed too;
+            // the class is ours alone and can be removed.
+            unregister_window_class();
+        }
         0
     } else {
         previous - 1
@@ -775,20 +798,8 @@ impl Drop for PreviewObject {
 unsafe fn ensure_window_class() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
-        let class_name = CLASS_NAME.get_or_init(|| wide("CsvViewerPreview"));
-        let window_class = WNDCLASSW {
-            style: 0,
-            lpfnWndProc: Some(preview_window_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: GetModuleHandleW(ptr::null()),
-            hIcon: ptr::null_mut(),
-            hCursor: ptr::null_mut(),
-            hbrBackground: ptr::null_mut(),
-            lpszMenuName: ptr::null(),
-            lpszClassName: class_name.as_ptr(),
-        };
-        let atom = RegisterClassW(&window_class);
+        let class_name = CLASS_NAME.get_or_init(|| wide(WINDOW_CLASS_NAME));
+        let atom = register_window_class(this_module(), class_name);
         if atom == 0 {
             let error = GetLastError();
             if error != ERROR_CLASS_ALREADY_EXISTS {
@@ -798,6 +809,35 @@ unsafe fn ensure_window_class() {
             }
         }
     });
+}
+
+/// `class_name` must outlive the registration: Windows keeps the pointer.
+/// The class belongs to the DLL's module, not to the host EXE, so a DLL
+/// reload re-registers cleanly instead of reusing a stale class.
+unsafe fn register_window_class(module: HINSTANCE, class_name: &[u16]) -> u16 {
+    let window_class = WNDCLASSW {
+        style: 0,
+        lpfnWndProc: Some(preview_window_proc),
+        cbClsExtra: 0,
+        cbWndExtra: 0,
+        hInstance: module,
+        hIcon: ptr::null_mut(),
+        hCursor: ptr::null_mut(),
+        hbrBackground: ptr::null_mut(),
+        lpszMenuName: ptr::null(),
+        lpszClassName: class_name.as_ptr(),
+    };
+    RegisterClassW(&window_class)
+}
+
+/// Remove the class once no object of the library is left (07A-06). A
+/// failure is tolerated: Windows refuses to delete a class whose windows are
+/// still alive, and such residue is harmless.
+unsafe fn unregister_window_class() {
+    let Some(class_name) = CLASS_NAME.get() else {
+        return;
+    };
+    UnregisterClassW(class_name.as_ptr(), this_module());
 }
 
 /// Hand the rest of the host stream to a session without copying it twice.
@@ -876,7 +916,7 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
         ensure_window_class();
         let width = (object.rect.right - object.rect.left).max(320);
         let height = (object.rect.bottom - object.rect.top).max(200);
-        let class_name = wide("CsvViewerPreview");
+        let class_name = wide(WINDOW_CLASS_NAME);
         let title = wide("CSV viewer and preview");
         let window = CreateWindowExW(
             0,
@@ -889,7 +929,7 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
             height,
             object.parent,
             ptr::null_mut(),
-            GetModuleHandleW(ptr::null()),
+            this_module(),
             object as *mut PreviewObject as *mut c_void,
         );
         if window.is_null() {
@@ -1006,6 +1046,7 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
     if thread::Builder::new()
         .name("csv-preview-scan-waiter".to_string())
         .spawn(move || {
+            let _alive = crate::lifecycle::LiveThread::enter();
             let _ = waiting.wait_for_scan(timeout + Duration::from_secs(1));
             PostMessageW(window_value as HWND, WM_APP_DONE, 0, 0);
         })
@@ -1020,6 +1061,8 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
 }
 
 static CLASS_NAME: OnceLock<Vec<u16>> = OnceLock::new();
+
+const WINDOW_CLASS_NAME: &str = "CsvViewerPreview";
 
 unsafe extern "system" fn preview_window_proc(
     window: HWND,
@@ -1189,13 +1232,17 @@ pub unsafe extern "system" fn DllGetClassObject(
 /// Must be called according to the COM DLL lifetime contract.
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     // A panic here means the counters cannot be trusted: keep the DLL
-    // resident (S_FALSE) instead of allowing an unload.
+    // resident (S_FALSE) instead of allowing an unload. A library thread
+    // still running is also a refusal: unloading would leave it executing
+    // unmapped code.
     contain_hresult_or(S_FALSE, || {
-        if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 && SERVER_LOCKS.load(Ordering::SeqCst) == 0
+        if crate::lifecycle::live_threads() != 0
+            || LIVE_COM_OBJECTS.load(Ordering::SeqCst) != 0
+            || SERVER_LOCKS.load(Ordering::SeqCst) != 0
         {
-            S_OK
-        } else {
             S_FALSE
+        } else {
+            S_OK
         }
     })
 }
@@ -1254,6 +1301,9 @@ unsafe fn release_factory(factory: *mut ClassFactory) -> ULONG {
     if previous == 1 {
         LIVE_COM_OBJECTS.fetch_sub(1, Ordering::SeqCst);
         drop(Box::from_raw(factory));
+        if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 {
+            unregister_window_class();
+        }
         0
     } else {
         previous - 1
@@ -1675,6 +1725,9 @@ extern "system" {
     fn GetDC(window: HWND) -> HDC;
     fn ReleaseDC(window: HWND, dc: HDC) -> i32;
     fn RegisterClassW(class: *const WNDCLASSW) -> u16;
+    fn UnregisterClassW(class: LPCWSTR, instance: HINSTANCE) -> BOOL;
+    #[cfg(test)]
+    fn GetClassInfoExW(instance: HINSTANCE, class: LPCWSTR, info: *mut WNDCLASSEXW) -> BOOL;
     fn CreateWindowExW(
         ex_style: DWORD,
         class_name: LPCWSTR,
@@ -1780,6 +1833,36 @@ mod tests {
     use super::*;
 
     const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+    /// 07A-06: the class is registered with the module we hand to
+    /// `register_window_class`, not with whatever `GetModuleHandleW(NULL)`
+    /// resolves. A different always-loaded system DLL proves the point.
+    #[test]
+    fn window_class_registers_with_the_given_module() {
+        let name = wide("CsvViewerPreviewTestClass");
+        let exe = unsafe { GetModuleHandleW(ptr::null()) };
+        let other = unsafe { GetModuleHandleW(wide("kernel32.dll").as_ptr()) };
+        assert!(!other.is_null(), "kernel32 must be loaded");
+        assert_ne!(other, exe, "the test needs a non-EXE module handle");
+        let atom = unsafe { register_window_class(other, &name) };
+        assert_ne!(atom, 0, "RegisterClassW failed with {}", unsafe {
+            GetLastError()
+        });
+        let mut info: WNDCLASSEXW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
+        let found = unsafe { GetClassInfoExW(other, name.as_ptr(), &mut info) };
+        assert_ne!(found, 0, "GetClassInfoExW could not find the class");
+        assert_eq!(info.hInstance, other, "the class must use the given module");
+    }
+
+    /// 07A-06: `DllCanUnloadNow` refuses while any library thread is running;
+    /// a thread outliving an otherwise-idle library must not allow an unload.
+    #[test]
+    fn unload_is_refused_while_a_library_thread_is_alive() {
+        let alive = crate::lifecycle::LiveThread::enter();
+        assert_eq!(unsafe { DllCanUnloadNow() }, S_FALSE);
+        drop(alive);
+    }
 
     /// 07A-05: an unwind out of an `extern "system"` function aborts the
     /// process since Rust 1.81, and prevhost.exe may host other handlers too.

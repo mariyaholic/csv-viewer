@@ -126,6 +126,7 @@ impl WorkerBackend {
         thread::Builder::new()
             .name("csv-worker-reader".to_string())
             .spawn(move || {
+                let _alive = crate::lifecycle::LiveThread::enter();
                 let mut reader = BufReader::new(stdout);
                 loop {
                     match read_message::<_, WorkerMessage>(&mut reader, max_frame) {
