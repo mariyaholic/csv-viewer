@@ -3,3 +3,7 @@
 /scratch
 **/*.rs.bk
 *.pdb
+
+# Agent workspace files (kept local-only; see docs/fix-plan/XR-1.md)
+AGENTS.md
+opencode.json
