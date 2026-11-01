@@ -274,7 +274,10 @@ impl PreviewSession {
         let max_spool = config.max_spool_bytes;
         thread::Builder::new()
             .name("csv-preview-spool".to_string())
-            .spawn(move || spool_stream(thread_inner, source, head, path, max_spool, chunk))
+            .spawn(move || {
+                let _alive = crate::lifecycle::LiveThread::enter();
+                spool_stream(thread_inner, source, head, path, max_spool, chunk)
+            })
             .map_err(|error| PreviewError::Io(error.to_string()))?;
         Ok(Self { inner })
     }
@@ -345,6 +348,7 @@ impl PreviewSession {
         thread::Builder::new()
             .name("csv-preview-scan".to_string())
             .spawn(move || {
+                let _alive = crate::lifecycle::LiveThread::enter();
                 let result =
                     backend.scan(&spool, &request, &thread_inner.cancel, &mut |progress| {
                         let mut state = thread_inner.state.lock().unwrap();
@@ -378,6 +382,7 @@ impl PreviewSession {
         thread::Builder::new()
             .name("csv-preview-timeout".to_string())
             .spawn(move || {
+                let _alive = crate::lifecycle::LiveThread::enter();
                 let deadline = Instant::now() + timeout;
                 let mut state = supervisor_inner.state.lock().unwrap();
                 loop {
