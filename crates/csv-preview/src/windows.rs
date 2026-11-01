@@ -325,6 +325,42 @@ static FACTORY_VTBL: IClassFactoryVtbl = IClassFactoryVtbl {
     lock_server: factory_lock_server,
 };
 
+// ---------------------------------------------------------------------------
+// Panic containment (07A-05)
+// ---------------------------------------------------------------------------
+
+// Since Rust 1.81 an unwind out of an `extern "system"` function aborts the
+// process — and prevhost.exe may be hosting other preview handlers too.
+// Contained here, every Win32 entry point fails the call instead of taking
+// the host down with it.
+
+fn contain_hresult(body: impl FnOnce() -> HRESULT) -> HRESULT {
+    contain_hresult_or(E_FAIL, body)
+}
+
+fn contain_hresult_or(default: HRESULT, body: impl FnOnce() -> HRESULT) -> HRESULT {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or(default)
+}
+
+/// Reference counts fail leak-safe on unwind: a counter stuck high keeps the
+/// DLL resident instead of risking a use-after-free.
+fn contain_ulong(body: impl FnOnce() -> ULONG) -> ULONG {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or(1)
+}
+
+/// A window proc failure falls back to the default procedure, so the host
+/// still processes the message.
+fn contain_lresult(
+    window: HWND,
+    message: UINT,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    body: impl FnOnce() -> LRESULT,
+) -> LRESULT {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
+        .unwrap_or_else(|_| unsafe { DefWindowProcW(window, message, wparam, lparam) })
+}
+
 unsafe fn object_from_this(this: *mut c_void) -> *mut PreviewObject {
     this as *mut PreviewObject
 }
@@ -372,15 +408,15 @@ unsafe extern "system" fn preview_query_interface(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    query_preview_interface(object_from_this(this), riid, ppv)
+    contain_hresult(|| unsafe { query_preview_interface(object_from_this(this), riid, ppv) })
 }
 
 unsafe extern "system" fn preview_add_ref(this: *mut c_void) -> ULONG {
-    object_add_ref(object_from_this(this))
+    contain_ulong(|| unsafe { object_add_ref(object_from_this(this)) })
 }
 
 unsafe extern "system" fn preview_release(this: *mut c_void) -> ULONG {
-    object_release(object_from_this(this))
+    contain_ulong(|| unsafe { object_release(object_from_this(this)) })
 }
 
 unsafe extern "system" fn init_query_interface(
@@ -388,18 +424,24 @@ unsafe extern "system" fn init_query_interface(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    let interface = &*(this as *const InitInterface);
-    query_preview_interface(interface.owner, riid, ppv)
+    contain_hresult(|| unsafe {
+        let interface = &*(this as *const InitInterface);
+        query_preview_interface(interface.owner, riid, ppv)
+    })
 }
 
 unsafe extern "system" fn init_add_ref(this: *mut c_void) -> ULONG {
-    let interface = &*(this as *const InitInterface);
-    object_add_ref(interface.owner)
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const InitInterface);
+        object_add_ref(interface.owner)
+    })
 }
 
 unsafe extern "system" fn init_release(this: *mut c_void) -> ULONG {
-    let interface = &*(this as *const InitInterface);
-    object_release(interface.owner)
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const InitInterface);
+        object_release(interface.owner)
+    })
 }
 
 unsafe fn stream_add_ref(stream: *mut c_void) {
@@ -612,79 +654,91 @@ unsafe extern "system" fn init_initialize(
     stream: *mut c_void,
     mode: u32,
 ) -> HRESULT {
-    if stream.is_null() {
-        return E_POINTER;
-    }
-    if mode & STGM_WRITE_BITS != 0 {
-        return STG_E_ACCESSDENIED;
-    }
-    let interface = &*(this as *const InitInterface);
-    let object = &mut *interface.owner;
-    if !object.stream.is_null() {
-        stream_release(object.stream);
-    }
-    stream_add_ref(stream);
-    object.stream = stream;
-    S_OK
+    contain_hresult(|| unsafe {
+        if stream.is_null() {
+            return E_POINTER;
+        }
+        if mode & STGM_WRITE_BITS != 0 {
+            return STG_E_ACCESSDENIED;
+        }
+        let interface = &*(this as *const InitInterface);
+        let object = &mut *interface.owner;
+        if !object.stream.is_null() {
+            stream_release(object.stream);
+        }
+        stream_add_ref(stream);
+        object.stream = stream;
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_set_window(this: *mut c_void, parent: HWND) -> HRESULT {
-    let object = &mut *object_from_this(this);
-    object.parent = parent;
-    if !object.window.is_null() && !parent.is_null() {
-        SetParent(object.window, parent);
-    }
-    S_OK
+    contain_hresult(|| unsafe {
+        let object = &mut *object_from_this(this);
+        object.parent = parent;
+        if !object.window.is_null() && !parent.is_null() {
+            SetParent(object.window, parent);
+        }
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_set_rect(this: *mut c_void, rect: *const RECT) -> HRESULT {
-    if rect.is_null() {
-        return E_POINTER;
-    }
-    let object = &mut *object_from_this(this);
-    object.rect = *rect;
-    if !object.window.is_null() {
-        let width = (object.rect.right - object.rect.left).max(1);
-        let height = (object.rect.bottom - object.rect.top).max(1);
-        MoveWindow(
-            object.window,
-            object.rect.left,
-            object.rect.top,
-            width,
-            height,
-            1,
-        );
-    }
-    S_OK
+    contain_hresult(|| unsafe {
+        if rect.is_null() {
+            return E_POINTER;
+        }
+        let object = &mut *object_from_this(this);
+        object.rect = *rect;
+        if !object.window.is_null() {
+            let width = (object.rect.right - object.rect.left).max(1);
+            let height = (object.rect.bottom - object.rect.top).max(1);
+            MoveWindow(
+                object.window,
+                object.rect.left,
+                object.rect.top,
+                width,
+                height,
+                1,
+            );
+        }
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_set_focus(this: *mut c_void) -> HRESULT {
-    let object = &*object_from_this(this);
-    if !object.window.is_null() {
-        SetFocus(object.window);
-    }
-    S_OK
+    contain_hresult(|| unsafe {
+        let object = &*object_from_this(this);
+        if !object.window.is_null() {
+            SetFocus(object.window);
+        }
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_query_focus(_this: *mut c_void, focus: *mut HWND) -> HRESULT {
-    if focus.is_null() {
-        return E_POINTER;
-    }
-    *focus = GetFocus();
-    S_OK
+    contain_hresult(|| unsafe {
+        if focus.is_null() {
+            return E_POINTER;
+        }
+        *focus = GetFocus();
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_translate_accelerator(
     _this: *mut c_void,
     _message: *mut MSG,
 ) -> HRESULT {
-    S_FALSE
+    contain_hresult(|| S_FALSE)
 }
 
 unsafe extern "system" fn preview_unload(this: *mut c_void) -> HRESULT {
-    let object = &mut *object_from_this(this);
-    object.cleanup();
-    S_OK
+    contain_hresult(|| unsafe {
+        let object = &mut *object_from_this(this);
+        object.cleanup();
+        S_OK
+    })
 }
 
 impl PreviewObject {
@@ -776,76 +830,79 @@ fn start_spooled_session(
 }
 
 unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
-    let object = &mut *object_from_this(this);
-    if object.stream.is_null() || object.parent.is_null() {
-        return E_UNEXPECTED;
-    }
-    if let Some(session) = object.session.take() {
-        session.cancel();
-    }
-    if !object.window.is_null() {
-        DestroyWindow(object.window);
-        object.window = ptr::null_mut();
-    }
+    contain_hresult(|| unsafe {
+        let object = &mut *object_from_this(this);
+        if object.stream.is_null() || object.parent.is_null() {
+            return E_UNEXPECTED;
+        }
+        if let Some(session) = object.session.take() {
+            session.cancel();
+        }
+        if !object.window.is_null() {
+            DestroyWindow(object.window);
+            object.window = ptr::null_mut();
+        }
 
-    let mut request = ScanRequest::preview();
-    let (settings, _) = Settings::load(None);
-    settings.apply_to(&mut request);
-    let reader = StreamReader::new(object.stream);
-    let length_hint = stream_size_hint(object.stream);
-    let config = PreviewConfig::default();
+        let mut request = ScanRequest::preview();
+        let (settings, _) = Settings::load(None);
+        settings.apply_to(&mut request);
+        let reader = StreamReader::new(object.stream);
+        let length_hint = stream_size_hint(object.stream);
+        let config = PreviewConfig::default();
 
-    // Read only the bounded head here, on the host's own apartment, so the
-    // first screen appears promptly. The rest of the stream is read on the
-    // session's spool thread (marshalled across apartments), so this thread is
-    // never blocked for a whole-file copy.
-    let mut reader = reader;
-    let head = match crate::session::read_head(&mut reader, config.head_bytes) {
-        Ok(head) => head,
-        Err(error) => {
-            object.set_error_text(&format!("CSV preview could not read stream: {error}"));
+        // Read only the bounded head here, on the host's own apartment, so the
+        // first screen appears promptly. The rest of the stream is read on the
+        // session's spool thread (marshalled across apartments), so this thread
+        // is never blocked for a whole-file copy.
+        let mut reader = reader;
+        let head = match crate::session::read_head(&mut reader, config.head_bytes) {
+            Ok(head) => head,
+            Err(error) => {
+                object.set_error_text(&format!("CSV preview could not read stream: {error}"));
+                return E_FAIL;
+            }
+        };
+        let session = match start_spooled_session(&mut reader, head, length_hint, &request, config)
+        {
+            Ok(session) => Arc::new(session),
+            Err(error) => {
+                object.set_error_text(&format!("CSV preview could not start: {error}"));
+                return E_FAIL;
+            }
+        };
+        object.session = Some(session);
+        object.refresh_text();
+
+        ensure_window_class();
+        let width = (object.rect.right - object.rect.left).max(320);
+        let height = (object.rect.bottom - object.rect.top).max(200);
+        let class_name = wide("CsvViewerPreview");
+        let title = wide("CSV viewer and preview");
+        let window = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            title.as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            object.rect.left,
+            object.rect.top,
+            width,
+            height,
+            object.parent,
+            ptr::null_mut(),
+            GetModuleHandleW(ptr::null()),
+            object as *mut PreviewObject as *mut c_void,
+        );
+        if window.is_null() {
+            object.set_error_text("CSV preview could not create its child window.");
             return E_FAIL;
         }
-    };
-    let session = match start_spooled_session(&mut reader, head, length_hint, &request, config) {
-        Ok(session) => Arc::new(session),
-        Err(error) => {
-            object.set_error_text(&format!("CSV preview could not start: {error}"));
-            return E_FAIL;
-        }
-    };
-    object.session = Some(session);
-    object.refresh_text();
-
-    ensure_window_class();
-    let width = (object.rect.right - object.rect.left).max(320);
-    let height = (object.rect.bottom - object.rect.top).max(200);
-    let class_name = wide("CsvViewerPreview");
-    let title = wide("CSV viewer and preview");
-    let window = CreateWindowExW(
-        0,
-        class_name.as_ptr(),
-        title.as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-        object.rect.left,
-        object.rect.top,
-        width,
-        height,
-        object.parent,
-        ptr::null_mut(),
-        GetModuleHandleW(ptr::null()),
-        object as *mut PreviewObject as *mut c_void,
-    );
-    if window.is_null() {
-        object.set_error_text("CSV preview could not create its child window.");
-        return E_FAIL;
-    }
-    object.window = window;
-    SetWindowLongPtrW(window, GWLP_USERDATA, object as *mut PreviewObject as isize);
-    object.refresh_text();
-    ShowWindow(window, SW_SHOW);
-    UpdateWindow(window);
-    S_OK
+        object.window = window;
+        SetWindowLongPtrW(window, GWLP_USERDATA, object as *mut PreviewObject as isize);
+        object.refresh_text();
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+        S_OK
+    })
 }
 
 impl PreviewObject {
@@ -946,10 +1003,19 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
     }
     let waiting = session.clone();
     let window_value = window as usize;
-    thread::spawn(move || {
-        let _ = waiting.wait_for_scan(timeout + Duration::from_secs(1));
-        PostMessageW(window_value as HWND, WM_APP_DONE, 0, 0);
-    });
+    if thread::Builder::new()
+        .name("csv-preview-scan-waiter".to_string())
+        .spawn(move || {
+            let _ = waiting.wait_for_scan(timeout + Duration::from_secs(1));
+            PostMessageW(window_value as HWND, WM_APP_DONE, 0, 0);
+        })
+        .is_err()
+    {
+        // The scan itself keeps running inside the session; only the
+        // completion ping would be missing, so the pane keeps the bounded
+        // preview instead of aborting the host.
+        object.set_error_text("Full scan is running but its completion notice could not start.");
+    }
     object.refresh_text();
 }
 
@@ -961,39 +1027,41 @@ unsafe extern "system" fn preview_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let object = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut PreviewObject;
-    match message {
-        WM_SIZE | WM_DPICHANGED => {
-            if !object.is_null() {
-                if message == WM_DPICHANGED && !(*object).font.is_null() {
-                    DeleteObject((*object).font);
-                    (*object).font = ptr::null_mut();
+    contain_lresult(window, message, wparam, lparam, || unsafe {
+        let object = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut PreviewObject;
+        match message {
+            WM_SIZE | WM_DPICHANGED => {
+                if !object.is_null() {
+                    if message == WM_DPICHANGED && !(*object).font.is_null() {
+                        DeleteObject((*object).font);
+                        (*object).font = ptr::null_mut();
+                    }
+                    (*object).refresh_text();
                 }
-                (*object).refresh_text();
+                DefWindowProcW(window, message, wparam, lparam)
             }
-            DefWindowProcW(window, message, wparam, lparam)
-        }
-        WM_PAINT => {
-            paint_window(window, object);
-            0
-        }
-        WM_ERASEBKGND => 1,
-        WM_KEYDOWN if wparam == b'F' as usize || wparam == b'f' as usize => {
-            if !object.is_null() {
-                start_full_scan(&mut *object, window);
+            WM_PAINT => {
+                paint_window(window, object);
+                0
             }
-            0
-        }
-        WM_APP_DONE => {
-            if !object.is_null() {
-                (*object).refresh_text();
-                InvalidateRect(window, ptr::null(), 1);
+            WM_ERASEBKGND => 1,
+            WM_KEYDOWN if wparam == b'F' as usize || wparam == b'f' as usize => {
+                if !object.is_null() {
+                    start_full_scan(&mut *object, window);
+                }
+                0
             }
-            0
+            WM_APP_DONE => {
+                if !object.is_null() {
+                    (*object).refresh_text();
+                    InvalidateRect(window, ptr::null(), 1);
+                }
+                0
+            }
+            WM_DESTROY => 0,
+            _ => DefWindowProcW(window, message, wparam, lparam),
         }
-        WM_DESTROY => 0,
-        _ => DefWindowProcW(window, message, wparam, lparam),
-    }
+    })
 }
 
 unsafe fn paint_window(window: HWND, object: *mut PreviewObject) {
@@ -1096,48 +1164,55 @@ pub unsafe extern "system" fn DllGetClassObject(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    if clsid.is_null() || riid.is_null() || ppv.is_null() {
-        return E_POINTER;
-    }
-    *ppv = ptr::null_mut();
-    let expected = parse_guid(CLSID_CSV_PREVIEW);
-    if expected.map(|value| value != *clsid).unwrap_or(true) {
-        return CLASS_E_CLASSNOTAVAILABLE;
-    }
-    let factory = Box::into_raw(Box::new(ClassFactory {
-        vtbl: &FACTORY_VTBL,
-        refcount: AtomicU32::new(1),
-    }));
-    LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
-    let result = query_factory(factory, riid, ppv);
-    release_factory(factory);
-    result
+    contain_hresult(|| unsafe {
+        if clsid.is_null() || riid.is_null() || ppv.is_null() {
+            return E_POINTER;
+        }
+        *ppv = ptr::null_mut();
+        let expected = parse_guid(CLSID_CSV_PREVIEW);
+        if expected.map(|value| value != *clsid).unwrap_or(true) {
+            return CLASS_E_CLASSNOTAVAILABLE;
+        }
+        let factory = Box::into_raw(Box::new(ClassFactory {
+            vtbl: &FACTORY_VTBL,
+            refcount: AtomicU32::new(1),
+        }));
+        LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
+        let result = query_factory(factory, riid, ppv);
+        release_factory(factory);
+        result
+    })
 }
 
 #[no_mangle]
 /// # Safety
 /// Must be called according to the COM DLL lifetime contract.
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 && SERVER_LOCKS.load(Ordering::SeqCst) == 0 {
-        S_OK
-    } else {
-        S_FALSE
-    }
+    // A panic here means the counters cannot be trusted: keep the DLL
+    // resident (S_FALSE) instead of allowing an unload.
+    contain_hresult_or(S_FALSE, || {
+        if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 && SERVER_LOCKS.load(Ordering::SeqCst) == 0
+        {
+            S_OK
+        } else {
+            S_FALSE
+        }
+    })
 }
 
 #[no_mangle]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
-    unsafe {
+    contain_hresult(|| unsafe {
         let Some(path) = module_path() else {
             return E_FAIL;
         };
         register_module(&path.to_string_lossy(), false)
-    }
+    })
 }
 
 #[no_mangle]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
-    unregister_module()
+    contain_hresult(unregister_module)
 }
 
 unsafe fn query_factory(
@@ -1164,12 +1239,14 @@ unsafe extern "system" fn factory_query_interface(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    query_factory(this as *mut ClassFactory, riid, ppv)
+    contain_hresult(|| unsafe { query_factory(this as *mut ClassFactory, riid, ppv) })
 }
 
 unsafe extern "system" fn factory_add_ref(this: *mut c_void) -> ULONG {
-    let factory = &*(this as *const ClassFactory);
-    factory.refcount.fetch_add(1, Ordering::SeqCst) + 1
+    contain_ulong(|| unsafe {
+        let factory = &*(this as *const ClassFactory);
+        factory.refcount.fetch_add(1, Ordering::SeqCst) + 1
+    })
 }
 
 unsafe fn release_factory(factory: *mut ClassFactory) -> ULONG {
@@ -1184,7 +1261,7 @@ unsafe fn release_factory(factory: *mut ClassFactory) -> ULONG {
 }
 
 unsafe extern "system" fn factory_release(this: *mut c_void) -> ULONG {
-    release_factory(this as *mut ClassFactory)
+    contain_ulong(|| unsafe { release_factory(this as *mut ClassFactory) })
 }
 
 unsafe extern "system" fn factory_create_instance(
@@ -1193,50 +1270,54 @@ unsafe extern "system" fn factory_create_instance(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    let _factory = &*(this as *const ClassFactory);
-    if !outer.is_null() {
-        return CLASS_E_NOAGGREGATION;
-    }
-    if riid.is_null() || ppv.is_null() {
-        return E_POINTER;
-    }
-    *ppv = ptr::null_mut();
-    let mut object = Box::new(PreviewObject {
-        vtbl: &PREVIEW_VTBL,
-        refcount: AtomicU32::new(1),
-        stream: ptr::null_mut(),
-        parent: ptr::null_mut(),
-        rect: RECT {
-            left: 0,
-            top: 0,
-            right: 640,
-            bottom: 480,
-        },
-        window: ptr::null_mut(),
-        font: ptr::null_mut(),
-        brush: ptr::null_mut(),
-        session: None,
-        text: Vec::new(),
-        init: InitInterface {
-            vtbl: &INIT_VTBL,
-            owner: ptr::null_mut(),
-        },
-    });
-    object.init.owner = &mut *object as *mut PreviewObject;
-    LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
-    let raw = Box::into_raw(object);
-    let result = query_preview_interface(raw, riid, ppv);
-    object_release(raw);
-    result
+    contain_hresult(|| unsafe {
+        let _factory = &*(this as *const ClassFactory);
+        if !outer.is_null() {
+            return CLASS_E_NOAGGREGATION;
+        }
+        if riid.is_null() || ppv.is_null() {
+            return E_POINTER;
+        }
+        *ppv = ptr::null_mut();
+        let mut object = Box::new(PreviewObject {
+            vtbl: &PREVIEW_VTBL,
+            refcount: AtomicU32::new(1),
+            stream: ptr::null_mut(),
+            parent: ptr::null_mut(),
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 640,
+                bottom: 480,
+            },
+            window: ptr::null_mut(),
+            font: ptr::null_mut(),
+            brush: ptr::null_mut(),
+            session: None,
+            text: Vec::new(),
+            init: InitInterface {
+                vtbl: &INIT_VTBL,
+                owner: ptr::null_mut(),
+            },
+        });
+        object.init.owner = &mut *object as *mut PreviewObject;
+        LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
+        let raw = Box::into_raw(object);
+        let result = query_preview_interface(raw, riid, ppv);
+        object_release(raw);
+        result
+    })
 }
 
 unsafe extern "system" fn factory_lock_server(_this: *mut c_void, lock: BOOL) -> HRESULT {
-    if lock != 0 {
-        SERVER_LOCKS.fetch_add(1, Ordering::SeqCst);
-    } else {
-        SERVER_LOCKS.fetch_sub(1, Ordering::SeqCst);
-    }
-    S_OK
+    contain_hresult(|| {
+        if lock != 0 {
+            SERVER_LOCKS.fetch_add(1, Ordering::SeqCst);
+        } else {
+            SERVER_LOCKS.fetch_sub(1, Ordering::SeqCst);
+        }
+        S_OK
+    })
 }
 
 fn parse_guid(text: &str) -> Option<GUID> {
@@ -1699,6 +1780,26 @@ mod tests {
     use super::*;
 
     const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+    /// 07A-05: an unwind out of an `extern "system"` function aborts the
+    /// process since Rust 1.81, and prevhost.exe may host other handlers too.
+    /// Every contained entry must come back as its fallback value instead;
+    /// this test reaching its assertions past four injected panics is the
+    /// abort-proof evidence.
+    #[test]
+    fn panic_in_preview_does_not_abort_host() {
+        assert_eq!(contain_hresult(|| panic!("injected preview panic")), E_FAIL);
+        assert_eq!(
+            contain_hresult_or(S_FALSE, || panic!("injected fallback choice")),
+            S_FALSE
+        );
+        // A refcount fallback of 1 is leak-safe: the DLL simply stays loaded.
+        assert_eq!(contain_ulong(|| panic!("injected refcount panic")), 1);
+        // The window proc falls back to the default procedure (WM_NULL).
+        contain_lresult(ptr::null_mut(), 0, 0, 0, || {
+            panic!("injected wndproc panic")
+        });
+    }
 
     #[test]
     fn parses_the_registration_clsid() {
