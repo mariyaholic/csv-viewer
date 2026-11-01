@@ -4,14 +4,16 @@
 //!
 //! The engine reads a bounded head for detection, then streams the rest
 //! through a decoder and the `csv` crate. It never stores more than the
-//! preview rows and bounded aggregates, and it stops on a record/byte/time
-//! limit, cancellation or a malformed record. A partial result has no total.
+//! preview rows and bounded aggregates, and it stops on a record/byte/field
+//! limit, cancellation, timeout or a malformed record. Caps, cancellation and
+//! the deadline also hold inside one record, not only between records. A
+//! partial result has no total.
 
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -152,7 +154,22 @@ pub fn scan_with_progress<R: Read>(
     let source = io::Cursor::new(head).chain(reader);
     let decoded = DecodeReader::new(source, encoding_kind, stats.clone());
     let malformed = Arc::new(AtomicBool::new(false));
-    let guarded = QuoteGuard::new(decoded, &dialect, malformed.clone());
+    let halt = Arc::new(AtomicU8::new(HALT_NONE));
+    // A field may only grow to `max_field_chars * 4` bytes before the scan
+    // stops: caps, cancellation and deadlines must hold inside one record,
+    // not only between records.
+    let bounds = ReaderBounds {
+        halt: halt.clone(),
+        cancel,
+        started,
+        deadline,
+        field_budget: Some(
+            u64::try_from(request.limits.max_field_chars)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(4),
+        ),
+    };
+    let guarded = QuoteGuard::new(decoded, &dialect, malformed.clone(), bounds);
     let mut csv_reader = build_reader(guarded, &dialect);
 
     let mut state = ScanState::new(request, progress, info.total_bytes);
@@ -186,9 +203,15 @@ pub fn scan_with_progress<R: Read>(
             end.parse_error = Some(error.to_string());
         }
     }
+    // A halt while reading the first record already ends the scan; the loop
+    // below would otherwise not consult the guard again.
+    apply_reader_halt(&halt, &mut end);
     state.update_bytes(stats.source_offset(csv_reader.position().byte()));
 
     while end.parse_error.is_none() && !end.complete {
+        if apply_reader_halt(&halt, &mut end) {
+            break;
+        }
         if cancel.load(Ordering::Relaxed) {
             end.reason = Some(IncompleteReason::Cancelled);
             break;
@@ -233,6 +256,9 @@ pub fn scan_with_progress<R: Read>(
                 end.parse_error = Some(error.to_string());
             }
         }
+        // Refine the error: the guard distinguishes a cancellation or
+        // deadline reached inside a record from a plain parse error.
+        apply_reader_halt(&halt, &mut end);
     }
 
     if malformed.load(Ordering::Relaxed) && end.reason.is_none() {
@@ -295,7 +321,53 @@ pub fn scan_with_progress<R: Read>(
 /// Tracks whether the decoded byte stream ends inside a quoted field. The
 /// `csv` crate is deliberately lenient at EOF; a preview must not call an
 /// unterminated quote a complete record.
-struct QuoteGuard<R: Read> {
+/// Codes a halt that must stop the scan from inside the reader. 0 keeps
+/// reading; the scan loop maps the others to report reasons.
+const HALT_NONE: u8 = 0;
+const HALT_FIELD_BUDGET: u8 = 1;
+const HALT_CANCELLED: u8 = 2;
+const HALT_TIME_LIMIT: u8 = 3;
+
+/// Maps a mid-field halt inside the reader to the report's end state. A
+/// budget stop is a parse error (the record is unfinished); a cancellation or
+/// deadline is not. Returns whether a halt was pending.
+fn apply_reader_halt(halt: &AtomicU8, end: &mut ScanEnd) -> bool {
+    match halt.swap(HALT_NONE, Ordering::Relaxed) {
+        HALT_NONE => false,
+        HALT_FIELD_BUDGET => {
+            end.complete = false;
+            end.reason = Some(IncompleteReason::ParseError);
+            end.parse_error = Some("a single field exceeded the per-field byte budget".to_string());
+            true
+        }
+        HALT_CANCELLED => {
+            end.complete = false;
+            end.reason = Some(IncompleteReason::Cancelled);
+            end.parse_error = None;
+            true
+        }
+        HALT_TIME_LIMIT => {
+            end.complete = false;
+            end.reason = Some(IncompleteReason::TimeLimit);
+            end.parse_error = None;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Bounds enforced by the reader in addition to the quote state: a shared
+/// halt slot with the scan loop, the cancellation flag and deadline, and the
+/// hard byte budget per field (`None` disables it).
+struct ReaderBounds<'a> {
+    halt: Arc<AtomicU8>,
+    cancel: &'a AtomicBool,
+    started: Instant,
+    deadline: Option<Duration>,
+    field_budget: Option<u64>,
+}
+
+struct QuoteGuard<'a, R: Read> {
     inner: R,
     quote: u8,
     delimiter: u8,
@@ -303,6 +375,9 @@ struct QuoteGuard<R: Read> {
     double_quote: bool,
     state: QuoteState,
     malformed: Arc<AtomicBool>,
+    bounds: ReaderBounds<'a>,
+    /// Bytes counted since the current field started.
+    field_bytes: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -314,8 +389,13 @@ enum QuoteState {
     Escaped,
 }
 
-impl<R: Read> QuoteGuard<R> {
-    fn new(inner: R, dialect: &Dialect, malformed: Arc<AtomicBool>) -> Self {
+impl<'a, R: Read> QuoteGuard<'a, R> {
+    fn new(
+        inner: R,
+        dialect: &Dialect,
+        malformed: Arc<AtomicBool>,
+        bounds: ReaderBounds<'a>,
+    ) -> Self {
         Self {
             inner,
             quote: dialect.quote as u8,
@@ -324,6 +404,8 @@ impl<R: Read> QuoteGuard<R> {
             double_quote: dialect.double_quote,
             state: QuoteState::FieldStart,
             malformed,
+            bounds,
+            field_bytes: 0,
         }
     }
 
@@ -372,16 +454,53 @@ fn is_line_break(byte: u8) -> bool {
     byte == b'\n' || byte == b'\r'
 }
 
-impl<R: Read> Read for QuoteGuard<R> {
+impl<R: Read> Read for QuoteGuard<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        // Memory, cancellation and deadline bounds must also hold inside a
+        // single record, not only between records: one over-long or broken
+        // field could otherwise buffer the rest of the source.
+        if self.bounds.cancel.load(Ordering::Relaxed) {
+            self.bounds.halt.store(HALT_CANCELLED, Ordering::Relaxed);
+            return Err(io::Error::other("scan cancelled inside a record"));
+        }
+        if let Some(deadline) = self.bounds.deadline {
+            if self.bounds.started.elapsed() >= deadline {
+                self.bounds.halt.store(HALT_TIME_LIMIT, Ordering::Relaxed);
+                return Err(io::Error::other("scan deadline reached inside a record"));
+            }
+        }
         let read = self.inner.read(buffer)?;
         if read == 0 {
             if matches!(self.state, QuoteState::Quoted | QuoteState::Escaped) {
                 self.malformed.store(true, Ordering::Relaxed);
             }
-        } else {
-            for byte in &buffer[..read] {
-                self.feed(*byte);
+            return Ok(0);
+        }
+        for &byte in &buffer[..read] {
+            let state_before = self.state;
+            self.feed(byte);
+            match (state_before, self.state) {
+                // A fresh field starts with this byte.
+                (QuoteState::FieldStart, QuoteState::Unquoted | QuoteState::Quoted) => {
+                    self.field_bytes = 1;
+                }
+                // A field or record boundary consumed this byte; the next
+                // field starts with the following byte.
+                (_, QuoteState::FieldStart) => {
+                    self.field_bytes = 0;
+                }
+                // Data continues inside the current field.
+                _ => {
+                    self.field_bytes = self.field_bytes.saturating_add(1);
+                }
+            }
+            if let Some(budget) = self.bounds.field_budget {
+                if self.field_bytes > budget {
+                    self.bounds.halt.store(HALT_FIELD_BUDGET, Ordering::Relaxed);
+                    return Err(io::Error::other(format!(
+                        "a field exceeded the per-field budget of {budget} bytes"
+                    )));
+                }
             }
         }
         Ok(read)
