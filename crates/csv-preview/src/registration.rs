@@ -16,6 +16,13 @@ pub const PREVIEW_HANDLERS_KEY: &str =
     "Software\\Microsoft\\Windows\\CurrentVersion\\PreviewHandlers";
 pub const THREADING_MODEL: &str = "Apartment";
 
+/// `DisableLowILProcessIsolation` (REG_DWORD, 1): opt this preview handler out
+/// of the Low integrity level that `prevhost.exe` otherwise imposes. Without
+/// it the spool copy under `%TEMP%` fails before any window appears. Microsoft
+/// documents this per-handler opt-out (the PowerToys spelling).
+pub const DISABLE_LOWIL_VALUE_NAME: &str = "DisableLowILProcessIsolation";
+pub const DISABLE_LOWIL_VALUE: u32 = 1;
+
 pub const REGISTRATION_WARNING: &str =
     "This will make CSV viewer and preview the preview handler for .csv files for the current \
      Windows user. It may replace another preview handler. You can unregister it at any time; \
@@ -27,8 +34,33 @@ pub enum ExpectedValue {
     Clsid,
     /// The value must match the installed module path before removal.
     ModulePath,
-    /// A fixed descriptive value. It is removed only if it equals this string.
+    /// A fixed `REG_SZ` string. It is removed only if it equals this string.
     Static(&'static str),
+    /// A fixed `REG_DWORD` number. It is removed only if it equals this number.
+    Dword(u32),
+}
+
+/// A registry value written by the plan and read back for ownership checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    /// A `REG_SZ` string.
+    Text(String),
+    /// A `REG_DWORD` integer.
+    Dword(u32),
+}
+
+impl Value {
+    pub fn text(value: impl Into<String>) -> Self {
+        Value::Text(value.into())
+    }
+
+    /// The string form of a text value, or `None` for a DWORD.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Value::Text(value) => Some(value),
+            Value::Dword(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +69,7 @@ pub struct RegistryValue {
     pub key: String,
     /// `None` means the default value.
     pub name: Option<&'static str>,
-    pub value: String,
+    pub value: Value,
     pub expected: ExpectedValue,
 }
 
@@ -45,6 +77,22 @@ impl RegistryValue {
     /// Value used to detect a conflicting existing handler for CLSID entries.
     pub fn is_association(&self) -> bool {
         self.name.is_none() && self.expected == ExpectedValue::Clsid
+    }
+
+    /// Whether an existing `REG_SZ`/`REG_DWORD` value still belongs to this
+    /// handler and may therefore be removed on unregistration.
+    pub fn still_owned_by_handler(&self, existing: &Value) -> bool {
+        match (&self.expected, existing) {
+            (ExpectedValue::Clsid, Value::Text(text)) => {
+                text.eq_ignore_ascii_case(CLSID_CSV_PREVIEW)
+            }
+            (ExpectedValue::ModulePath, Value::Text(text)) => {
+                text.eq_ignore_ascii_case(self.value.as_text().unwrap_or(""))
+            }
+            (ExpectedValue::Static(expected), Value::Text(text)) => text == expected,
+            (ExpectedValue::Dword(expected), Value::Dword(found)) => expected == found,
+            _ => false,
+        }
     }
 }
 
@@ -55,49 +103,57 @@ pub fn register_plan(module_path: &str) -> Vec<RegistryValue> {
         RegistryValue {
             key: format!("CLSID\\{CLSID_CSV_PREVIEW}"),
             name: Some("AppID"),
-            value: PREVHOST_APPID.to_string(),
+            value: Value::text(PREVHOST_APPID),
             expected: ExpectedValue::Static(PREVHOST_APPID),
+        },
+        // Low integrity isolation would deny the spool copy under %TEMP%; the
+        // documented per-handler opt-out keeps the preview working.
+        RegistryValue {
+            key: format!("CLSID\\{CLSID_CSV_PREVIEW}"),
+            name: Some(DISABLE_LOWIL_VALUE_NAME),
+            value: Value::Dword(DISABLE_LOWIL_VALUE),
+            expected: ExpectedValue::Dword(DISABLE_LOWIL_VALUE),
         },
         RegistryValue {
             key: format!("CLSID\\{CLSID_CSV_PREVIEW}"),
             name: Some("DisplayName"),
-            value: CLSID_DESCRIPTION.to_string(),
+            value: Value::text(CLSID_DESCRIPTION),
             expected: ExpectedValue::Static(CLSID_DESCRIPTION),
         },
         RegistryValue {
             key: PREVIEW_HANDLERS_KEY.to_string(),
             name: Some(CLSID_CSV_PREVIEW),
-            value: CLSID_DESCRIPTION.to_string(),
+            value: Value::text(CLSID_DESCRIPTION),
             expected: ExpectedValue::Static(CLSID_DESCRIPTION),
         },
         RegistryValue {
             key: format!("CLSID\\{CLSID_CSV_PREVIEW}"),
             name: None,
-            value: CLSID_DESCRIPTION.to_string(),
+            value: Value::text(CLSID_DESCRIPTION),
             expected: ExpectedValue::Static(CLSID_DESCRIPTION),
         },
         RegistryValue {
             key: format!("CLSID\\{CLSID_CSV_PREVIEW}\\InprocServer32"),
             name: None,
-            value: module_path.to_string(),
+            value: Value::text(module_path),
             expected: ExpectedValue::ModulePath,
         },
         RegistryValue {
             key: format!("CLSID\\{CLSID_CSV_PREVIEW}\\InprocServer32"),
             name: Some("ThreadingModel"),
-            value: THREADING_MODEL.to_string(),
+            value: Value::text(THREADING_MODEL),
             expected: ExpectedValue::Static(THREADING_MODEL),
         },
         RegistryValue {
             key: format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
             name: None,
-            value: CLSID_CSV_PREVIEW.to_string(),
+            value: Value::text(CLSID_CSV_PREVIEW),
             expected: ExpectedValue::Clsid,
         },
         RegistryValue {
             key: format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
             name: None,
-            value: CLSID_CSV_PREVIEW.to_string(),
+            value: Value::text(CLSID_CSV_PREVIEW),
             expected: ExpectedValue::Clsid,
         },
     ]
@@ -117,7 +173,7 @@ pub fn association_keys() -> Vec<String> {
 /// represented as `None` or success; other failures must be returned.
 pub trait Registry {
     type Error;
-    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, Self::Error>;
+    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, Self::Error>;
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), Self::Error>;
     fn write(&mut self, entry: &RegistryValue) -> Result<(), Self::Error>;
 }
@@ -128,7 +184,7 @@ pub fn apply_plan<R: Registry>(
     registry: &mut R,
     plan: &[RegistryValue],
 ) -> Result<(), (R::Error, Vec<R::Error>)> {
-    let mut written: Vec<(&RegistryValue, Option<String>)> = Vec::new();
+    let mut written: Vec<(&RegistryValue, Option<Value>)> = Vec::new();
     for entry in plan {
         let previous = match registry.read(&entry.key, entry.name) {
             Ok(value) => value,
@@ -144,7 +200,7 @@ pub fn apply_plan<R: Registry>(
 
 fn rollback<R: Registry>(
     registry: &mut R,
-    written: Vec<(&RegistryValue, Option<String>)>,
+    written: Vec<(&RegistryValue, Option<Value>)>,
 ) -> Vec<R::Error> {
     let mut errors = Vec::new();
     for (entry, previous) in written.into_iter().rev() {
@@ -172,12 +228,7 @@ fn rollback<R: Registry>(
 pub fn unregister<R: Registry>(registry: &mut R, module_path: &str) -> Result<(), R::Error> {
     for entry in register_plan(module_path) {
         if let Some(existing) = registry.read(&entry.key, entry.name)? {
-            let matches = match entry.expected {
-                ExpectedValue::Clsid => existing.eq_ignore_ascii_case(CLSID_CSV_PREVIEW),
-                ExpectedValue::ModulePath => existing.eq_ignore_ascii_case(&entry.value),
-                ExpectedValue::Static(value) => existing == value,
-            };
-            if matches {
+            if entry.still_owned_by_handler(&existing) {
                 registry.delete_value(&entry.key, entry.name)?;
             }
         }
@@ -197,19 +248,28 @@ mod tests {
         assert!(plan
             .iter()
             .any(|entry| entry.key.ends_with("InprocServer32")
-                && entry.value.ends_with("csv-preview.dll")));
+                && entry
+                    .value
+                    .as_text()
+                    .is_some_and(|value| value.ends_with("csv-preview.dll"))));
         assert!(plan
             .iter()
-            .any(|entry| entry.name == Some("ThreadingModel") && entry.value == "Apartment"));
-        assert!(plan
-            .iter()
-            .any(|entry| entry.name == Some("AppID") && entry.value == PREVHOST_APPID));
+            .any(|entry| entry.name == Some("ThreadingModel")
+                && entry.value == Value::text("Apartment")));
+        assert!(
+            plan.iter()
+                .any(|entry| entry.name == Some("AppID")
+                    && entry.value == Value::text(PREVHOST_APPID))
+        );
         assert!(plan.iter().any(
             |entry| entry.key == PREVIEW_HANDLERS_KEY && entry.name == Some(CLSID_CSV_PREVIEW)
         ));
+        assert!(plan.iter().any(|entry| entry.name == Some("DisplayName")
+            && entry.value == Value::text(CLSID_DESCRIPTION)));
         assert!(plan
             .iter()
-            .any(|entry| entry.name == Some("DisplayName") && entry.value == CLSID_DESCRIPTION));
+            .any(|entry| entry.name == Some(DISABLE_LOWIL_VALUE_NAME)
+                && entry.value == Value::Dword(DISABLE_LOWIL_VALUE)));
         assert_eq!(association_keys().len(), 2);
         assert!(association_keys().iter().all(
             |key| key.starts_with(".csv\\ShellEx") || key.starts_with("SystemFileAssociations")
@@ -226,7 +286,7 @@ mod tests {
     fn unregister_preserves_shared_keys_and_foreign_content() {
         use std::collections::BTreeMap;
         #[derive(Default)]
-        struct Fake(BTreeMap<String, BTreeMap<String, String>>);
+        struct Fake(BTreeMap<String, BTreeMap<String, Value>>);
         impl Fake {
             fn key(&mut self, path: &str) {
                 let mut current = String::new();
@@ -241,7 +301,7 @@ mod tests {
         }
         impl Registry for Fake {
             type Error = ();
-            fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, ()> {
+            fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, ()> {
                 Ok(self
                     .0
                     .get(key)
@@ -269,14 +329,14 @@ mod tests {
             .0
             .get_mut(".csv")
             .unwrap()
-            .insert("".into(), "foreign default".into());
+            .insert("".into(), Value::text("foreign default"));
         registry.key("SystemFileAssociations\\.csv\\ShellEx\\Foreign");
         registry.key(PREVIEW_HANDLERS_KEY);
         registry
             .0
             .get_mut(PREVIEW_HANDLERS_KEY)
             .unwrap()
-            .insert("Foreign".into(), "keep".into());
+            .insert("Foreign".into(), Value::text("keep"));
         apply_plan(&mut registry, &register_plan("module.dll")).unwrap();
         let association =
             format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
@@ -284,40 +344,44 @@ mod tests {
             .0
             .get_mut(&association)
             .unwrap()
-            .insert("".into(), "foreign handler".into());
+            .insert("".into(), Value::text("foreign handler"));
         let clsid = format!("CLSID\\{CLSID_CSV_PREVIEW}");
         registry
             .0
             .get_mut(&clsid)
             .unwrap()
-            .insert("Foreign".into(), "keep".into());
+            .insert("Foreign".into(), Value::text("keep"));
         unregister(&mut registry, "module.dll").unwrap();
         let csv_association = format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
         assert!(registry.0[&csv_association].is_empty());
         assert!(registry.0.contains_key(".csv\\ShellEx"));
-        assert_eq!(registry.0[".csv"][""], "foreign default");
+        assert_eq!(registry.0[".csv"][""], Value::text("foreign default"));
         assert!(registry
             .0
             .contains_key("SystemFileAssociations\\.csv\\ShellEx\\Foreign"));
-        assert_eq!(registry.0[&association][""], "foreign handler");
+        assert_eq!(registry.0[&association][""], Value::text("foreign handler"));
         assert!(registry.0[&format!("{clsid}\\InprocServer32")].is_empty());
-        assert_eq!(registry.0[&clsid]["Foreign"], "keep");
-        assert_eq!(registry.0[PREVIEW_HANDLERS_KEY]["Foreign"], "keep");
+        assert_eq!(registry.0[&clsid]["Foreign"], Value::text("keep"));
+        assert_eq!(
+            registry.0[PREVIEW_HANDLERS_KEY]["Foreign"],
+            Value::text("keep")
+        );
         assert!(!registry.0[PREVIEW_HANDLERS_KEY].contains_key(CLSID_CSV_PREVIEW));
         assert!(!registry.0[&clsid].contains_key("AppID"));
+        assert!(!registry.0[&clsid].contains_key(DISABLE_LOWIL_VALUE_NAME));
     }
     #[test]
     fn failed_registration_restores_prior_values() {
         use std::collections::BTreeMap;
         #[derive(Default)]
         struct Fake {
-            values: BTreeMap<String, String>,
+            values: BTreeMap<String, Value>,
             writes: usize,
             keys: std::collections::BTreeSet<String>,
         }
         impl Registry for Fake {
             type Error = &'static str;
-            fn read(&mut self, k: &str, _: Option<&str>) -> Result<Option<String>, Self::Error> {
+            fn read(&mut self, k: &str, _: Option<&str>) -> Result<Option<Value>, Self::Error> {
                 Ok(self.values.get(k).cloned())
             }
             fn write(&mut self, e: &RegistryValue) -> Result<(), Self::Error> {
@@ -345,14 +409,70 @@ mod tests {
             })
             .collect();
         fake.values
-            .insert(".csv\\ShellEx\\0".into(), "previous".into());
+            .insert(".csv\\ShellEx\\0".into(), Value::text("previous"));
         assert_eq!(apply_plan(&mut fake, &plan), Err(("failed", vec![])));
         assert_eq!(
-            fake.values.get(".csv\\ShellEx\\0").map(String::as_str),
-            Some("previous")
+            fake.values.get(".csv\\ShellEx\\0"),
+            Some(&Value::text("previous"))
         );
         assert!(!fake.values.contains_key(".csv\\ShellEx\\1"));
         assert!(fake.keys.contains(".csv\\ShellEx\\1"));
+    }
+
+    #[test]
+    fn register_plan_writes_disable_lowil_dword_and_unregister_removes_it() {
+        use std::collections::BTreeMap;
+        // Typed fake: stores REG_SZ/REG_DWORD distinctly so the test can prove
+        // the Low-IL opt-out is written as a DWORD and removed only when owned.
+        #[derive(Default)]
+        struct Fake(BTreeMap<(String, String), Value>);
+        impl Fake {
+            fn slot(key: &str, name: &str) -> (String, String) {
+                (key.to_string(), name.to_string())
+            }
+        }
+        impl Registry for Fake {
+            type Error = ();
+            fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, ()> {
+                Ok(self.0.get(&Fake::slot(key, name.unwrap_or(""))).cloned())
+            }
+            fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), ()> {
+                self.0.remove(&Fake::slot(key, name.unwrap_or("")));
+                Ok(())
+            }
+            fn write(&mut self, entry: &RegistryValue) -> Result<(), ()> {
+                self.0.insert(
+                    Fake::slot(&entry.key, entry.name.unwrap_or("")),
+                    entry.value.clone(),
+                );
+                Ok(())
+            }
+        }
+        let mut registry = Fake::default();
+        apply_plan(&mut registry, &register_plan("module.dll")).unwrap();
+        let clsid = format!("CLSID\\{CLSID_CSV_PREVIEW}");
+        let slot = Fake::slot(&clsid, DISABLE_LOWIL_VALUE_NAME);
+        assert_eq!(
+            registry.0.get(&slot),
+            Some(&Value::Dword(DISABLE_LOWIL_VALUE)),
+            "registration must write the Low-IL opt-out as a DWORD"
+        );
+        // A foreign value under the same name is not ours: leave it in place.
+        registry
+            .0
+            .insert(slot.clone(), Value::Dword(DISABLE_LOWIL_VALUE + 1));
+        unregister(&mut registry, "module.dll").unwrap();
+        assert_eq!(
+            registry.0.get(&slot),
+            Some(&Value::Dword(DISABLE_LOWIL_VALUE + 1)),
+            "unregistration must not remove a value this handler did not write"
+        );
+        // Our own value is removed.
+        registry
+            .0
+            .insert(slot.clone(), Value::Dword(DISABLE_LOWIL_VALUE));
+        unregister(&mut registry, "module.dll").unwrap();
+        assert!(!registry.0.contains_key(&slot));
     }
 
     #[test]
@@ -360,7 +480,7 @@ mod tests {
         struct Failing;
         impl Registry for Failing {
             type Error = &'static str;
-            fn read(&mut self, _: &str, _: Option<&str>) -> Result<Option<String>, Self::Error> {
+            fn read(&mut self, _: &str, _: Option<&str>) -> Result<Option<Value>, Self::Error> {
                 Err("read failed")
             }
             fn delete_value(&mut self, _: &str, _: Option<&str>) -> Result<(), Self::Error> {

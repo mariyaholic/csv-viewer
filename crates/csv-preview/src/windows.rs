@@ -25,7 +25,7 @@ use csvview_core::text::render_text;
 use csvview_core::{ScanReport, ScanRequest, Settings};
 
 use crate::registration::{
-    apply_plan, register_plan, unregister, Registry, RegistryValue, CLSID_CSV_PREVIEW,
+    apply_plan, register_plan, unregister, Registry, RegistryValue, Value, CLSID_CSV_PREVIEW,
     PREVIEW_HANDLERS_KEY,
 };
 use crate::{PreviewConfig, PreviewSession, SessionPhase, WorkerBackend};
@@ -93,6 +93,7 @@ const HKEY_CURRENT_USER: HKEY = 0x8000_0001usize as HKEY;
 const KEY_READ: u32 = 0x0002_0019;
 const KEY_WRITE: u32 = 0x0002_0006;
 const REG_SZ: u32 = 1;
+const REG_DWORD: u32 = 4;
 const REG_OPTION_NON_VOLATILE: u32 = 0;
 const DLL_PROCESS_ATTACH: DWORD = 1;
 
@@ -1165,7 +1166,7 @@ struct WindowsRegistry;
 
 impl Registry for WindowsRegistry {
     type Error = String;
-    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, String> {
+    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, String> {
         unsafe { read_value(key, name) }
     }
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), String> {
@@ -1229,16 +1230,24 @@ unsafe fn write_value(entry: &RegistryValue) -> Result<(), String> {
     let full = registry_path(&entry.key);
     let handle = create_key(&full)?;
     let name = entry.name.map(wide);
-    let value = wide(&entry.value);
+    let name_ptr = name
+        .as_ref()
+        .map(|name| name.as_ptr())
+        .unwrap_or(ptr::null());
+    let (value_type, bytes): (u32, Vec<u8>) = match &entry.value {
+        Value::Text(text) => {
+            let units = wide(text);
+            (REG_SZ, units.iter().flat_map(|u| u.to_le_bytes()).collect())
+        }
+        Value::Dword(number) => (REG_DWORD, number.to_le_bytes().to_vec()),
+    };
     let status = RegSetValueExW(
         handle,
-        name.as_ref()
-            .map(|name| name.as_ptr())
-            .unwrap_or(ptr::null()),
+        name_ptr,
         0,
-        REG_SZ,
-        value.as_ptr() as *const u8,
-        (value.len() * 2) as u32,
+        value_type,
+        bytes.as_ptr(),
+        bytes.len() as u32,
     );
     RegCloseKey(handle);
     if status == 0 {
@@ -1268,7 +1277,7 @@ unsafe fn delete_value(key: &str, name: Option<&str>) -> Result<(), String> {
     }
 }
 
-unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, String> {
+unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<Value>, String> {
     let full = wide(&registry_path(key));
     let mut handle: HKEY = ptr::null_mut();
     let status = RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle);
@@ -1298,7 +1307,7 @@ unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, St
             Err(format!("RegQueryValueExW failed with {status}"))
         };
     }
-    if value_type != REG_SZ {
+    if value_type != REG_SZ && value_type != REG_DWORD {
         RegCloseKey(handle);
         return Ok(None);
     }
@@ -1318,16 +1327,25 @@ unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, St
     if status != 0 {
         return Err(format!("RegQueryValueExW failed with {status}"));
     }
-    if value_type != REG_SZ {
-        return Ok(None);
-    }
     buffer.truncate(length as usize);
-    let utf16: Vec<u16> = buffer
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .take_while(|unit| *unit != 0)
-        .collect();
-    Ok(Some(String::from_utf16_lossy(&utf16)))
+    match value_type {
+        REG_DWORD => {
+            let mut bytes = [0u8; 4];
+            for (slot, byte) in bytes.iter_mut().zip(buffer.iter()) {
+                *slot = *byte;
+            }
+            Ok(Some(Value::Dword(u32::from_le_bytes(bytes))))
+        }
+        REG_SZ => {
+            let utf16: Vec<u16> = buffer
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .take_while(|unit| *unit != 0)
+                .collect();
+            Ok(Some(Value::Text(String::from_utf16_lossy(&utf16))))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Create a key and any missing parents.
