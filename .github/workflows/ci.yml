@@ -6,8 +6,8 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4 # TODO pin to commit SHA before publishing
-      - uses: dtolnay/rust-toolchain@1.85.0 # TODO pin to commit SHA before publishing
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@cfcaf53ba4c621917ec7f78a66bff7a8848ddad4 # 1.85.0
         with:
           toolchain: 1.85.0
           components: rustfmt, clippy
