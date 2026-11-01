@@ -83,10 +83,19 @@ The following must be exercised on a real Windows PC before release:
    - Confirm `DllRegisterServer` writes only
      `HKCU\Software\Classes\CLSID\{8f6a0f5e-3c4b-4a2e-9d7f-5b1c2e3a4f60}` and
      the `.csv`/`SystemFileAssociations\.csv` `ShellEx` values, with
-     `ThreadingModel=Apartment`, the prevhost `AppID`, `DisplayName`, and
-     the per-user `PreviewHandlers` value.
+     `ThreadingModel=Apartment`, the prevhost `AppID`, the
+     `DisableLowILProcessIsolation` DWORD, `DisplayName`, and the per-user
+     `PreviewHandlers` value.
    - Install over a different existing CSV preview handler: registration must
-     refuse (the installer must show the warning and ask first).
+     refuse, both when the foreign handler is in the user hive and when it is
+     only visible through the merged classes root (machine-wide). The visible,
+     warning-and-confirmation path is `csv-viewer.exe --register` (and
+     `--unregister`); with `--force` it proceeds and the backup/rollback keeps
+     the previous value.
+   - Seed `HKLM\Software\Classes\.csv\ShellEx\{8895…}` with a dummy CLSID and
+     confirm `csv-viewer.exe --register` warns and refuses, and that `--force`
+     proceeds. regsvr32 has no console, so its refusal surfaces only as the
+     failed HRESULT.
    - Unregister removes only values still matching this handler; a handler
      installed later and foreign values must survive. Shared keys are never
      deleted, so empty keys are expected residue. The exclusive CLSID tree
