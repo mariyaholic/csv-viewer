@@ -5,6 +5,7 @@
 
 mod app;
 mod args;
+mod registration;
 mod ui;
 
 use csvview_core::{
@@ -24,6 +25,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let Some(action) = options.registration {
+        // Opt-in registration with a visible confirmation (07A-07).
+        std::process::exit(registration::cli(action, options.force));
+    }
     let (settings, warnings) = Settings::load(options.settings.as_deref());
     for warning in &warnings {
         eprintln!("csv-viewer: {warning}");

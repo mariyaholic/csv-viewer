@@ -173,7 +173,18 @@ pub fn association_keys() -> Vec<String> {
 /// represented as `None` or success; other failures must be returned.
 pub trait Registry {
     type Error;
+    /// The per-user view (`HKCU\Software\Classes`).
     fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, Self::Error>;
+    /// The merged `HKEY_CLASSES_ROOT` view the conflict preflight reads. A
+    /// registry that only stores per-user values (the fakes) may fall back to
+    /// [`Registry::read`]; on real Windows this is the HKLM∪HKCU merge.
+    fn read_classes_root(
+        &mut self,
+        key: &str,
+        name: Option<&str>,
+    ) -> Result<Option<Value>, Self::Error> {
+        self.read(key, name)
+    }
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), Self::Error>;
     fn write(&mut self, entry: &RegistryValue) -> Result<(), Self::Error>;
 }
@@ -236,6 +247,77 @@ pub fn unregister<R: Registry>(registry: &mut R, module_path: &str) -> Result<()
     // Shared keys must remain: checking emptiness and deleting is not atomic.
     // The exclusive CLSID tree could be deleted, but is also left in place.
     Ok(())
+}
+
+/// A foreign preview handler that occupies an association this registration
+/// would take over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssociationConflict {
+    /// Classes-root key path of the conflicted association.
+    pub key: String,
+    /// The foreign CLSID currently registered there.
+    pub foreign_clsid: String,
+    /// `true` when the conflict is already in the user hive; `false` for a
+    /// machine-wide handler that only the merged classes root sees.
+    pub in_user_hive: bool,
+}
+
+impl AssociationConflict {
+    /// One visible refusal line.
+    pub fn message(&self) -> String {
+        if self.in_user_hive {
+            format!(
+                "{:?} currently belongs to another preview handler ({}); \
+                 either keep it or register with force",
+                self.key, self.foreign_clsid
+            )
+        } else {
+            format!(
+                "a machine-wide preview handler ({}) currently covers {:?}; \
+                 either keep it or register with force",
+                self.foreign_clsid, self.key
+            )
+        }
+    }
+}
+
+/// Preflight for a registration: every association in the plan that a
+/// foreign handler occupies, in the user hive or machine-wide through the
+/// merged classes root. `force` is a caller decision on top of this result.
+pub fn find_foreign_associations<R: Registry>(
+    registry: &mut R,
+    module_path: &str,
+) -> Result<Vec<AssociationConflict>, R::Error> {
+    let foreign = |existing: Option<Value>| match existing {
+        Some(Value::Text(text))
+            if !text.is_empty() && !text.eq_ignore_ascii_case(CLSID_CSV_PREVIEW) =>
+        {
+            Some(text)
+        }
+        _ => None,
+    };
+    let mut conflicts = Vec::new();
+    for entry in register_plan(module_path) {
+        if !entry.is_association() {
+            continue;
+        }
+        let user_foreign = foreign(registry.read(&entry.key, entry.name)?);
+        let merged_foreign = foreign(registry.read_classes_root(&entry.key, entry.name)?);
+        match (user_foreign, merged_foreign) {
+            (Some(existing), _) => conflicts.push(AssociationConflict {
+                key: entry.key,
+                foreign_clsid: existing,
+                in_user_hive: true,
+            }),
+            (None, Some(existing)) => conflicts.push(AssociationConflict {
+                key: entry.key,
+                foreign_clsid: existing,
+                in_user_hive: false,
+            }),
+            (None, None) => {}
+        }
+    }
+    Ok(conflicts)
 }
 
 #[cfg(test)]
@@ -473,6 +555,89 @@ mod tests {
             .insert(slot.clone(), Value::Dword(DISABLE_LOWIL_VALUE));
         unregister(&mut registry, "module.dll").unwrap();
         assert!(!registry.0.contains_key(&slot));
+    }
+
+    #[test]
+    fn register_refuses_when_hklm_shellex_exists() {
+        use std::collections::BTreeMap;
+        // The fake keeps the user hive and the machine-wide classes-root
+        // mirror distinct, so a foreign handler that only HKCR sees is a
+        // proof of the real conflict condition.
+        #[derive(Default)]
+        struct Fake {
+            user: BTreeMap<String, Value>,
+            root: BTreeMap<String, Value>,
+        }
+        impl Registry for Fake {
+            type Error = ();
+            fn read(&mut self, key: &str, _: Option<&str>) -> Result<Option<Value>, ()> {
+                Ok(self.user.get(key).cloned())
+            }
+            fn read_classes_root(
+                &mut self,
+                key: &str,
+                _: Option<&str>,
+            ) -> Result<Option<Value>, ()> {
+                Ok(self.root.get(key).cloned())
+            }
+            fn delete_value(&mut self, _: &str, _: Option<&str>) -> Result<(), ()> {
+                Ok(())
+            }
+            fn write(&mut self, _: &RegistryValue) -> Result<(), ()> {
+                Ok(())
+            }
+        }
+        const FOREIGN: &str = "{11111111-2222-3333-4444-555555555555}";
+
+        // Machine-only handler (HKLM style): HKCU is clean, HKCR shows it.
+        let mut registry = Fake::default();
+        registry.root.insert(
+            format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+            Value::text(FOREIGN),
+        );
+        let conflicts = find_foreign_associations(&mut registry, "module.dll").unwrap();
+        assert_eq!(
+            conflicts,
+            vec![AssociationConflict {
+                key: format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+                foreign_clsid: FOREIGN.to_string(),
+                in_user_hive: false,
+            }]
+        );
+        assert!(
+            conflicts[0].message().contains("machine-wide"),
+            "{}",
+            conflicts[0].message()
+        );
+
+        // A foreign handler already in the user hive is also reported.
+        registry.user.insert(
+            format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+            Value::text(FOREIGN),
+        );
+        let conflicts = find_foreign_associations(&mut registry, "module.dll").unwrap();
+        assert_eq!(conflicts.len(), 2);
+        assert!(
+            conflicts.iter().any(|conflict| conflict.in_user_hive
+                && conflict.key
+                    == format!(
+                        "SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"
+                    )),
+            "{conflicts:?}"
+        );
+
+        // A clean registry has no conflicts, and our own CLSID is expected,
+        // never foreign.
+        let mut registry = Fake::default();
+        for key in [
+            format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+            format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+        ] {
+            registry.user.insert(key, Value::text(CLSID_CSV_PREVIEW));
+        }
+        assert!(find_foreign_associations(&mut registry, "module.dll")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

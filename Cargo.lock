@@ -87,6 +87,7 @@ name = "csv-viewer"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "csv-preview",
  "csvview-core",
  "unicode-width",
 ]

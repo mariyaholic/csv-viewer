@@ -90,6 +90,7 @@ const FIXED_PITCH: u32 = 1;
 const FF_MODERN: u32 = 48;
 const FW_NORMAL: i32 = 400;
 const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
+const HKEY_CLASSES_ROOT: HKEY = 0x8000_0000usize as HKEY;
 const HKEY_CURRENT_USER: HKEY = 0x8000_0001usize as HKEY;
 const KEY_READ: u32 = 0x0002_0019;
 const KEY_WRITE: u32 = 0x0002_0006;
@@ -1418,30 +1419,37 @@ fn wide_text(value: &str) -> Vec<u16> {
 // ---------------------------------------------------------------------------
 
 fn register_module(module: &str, force: bool) -> HRESULT {
-    unsafe {
-        let plan = register_plan(module);
-        for entry in &plan {
-            if entry.is_association() && !force {
-                if let Some(existing) = read_default(&entry.key) {
-                    if !existing.is_empty() && !existing.eq_ignore_ascii_case(CLSID_CSV_PREVIEW) {
-                        eprintln!(
-                            "csv-preview: refusing to replace preview handler {existing:?} for {}; \
-                             ask the user before changing it",
-                            entry.key
-                        );
-                        return ERROR_ALREADY_EXISTS;
-                    }
-                }
+    // Preflight over the user hive AND the merged classes root: a
+    // machine-wide handler (HKLM, e.g. an office suite) is otherwise
+    // silently shadowed by our per-user key.
+    match crate::registration::find_foreign_associations(&mut WindowsRegistry, module) {
+        Ok(conflicts) if conflicts.is_empty() => {}
+        Ok(conflicts) => {
+            for conflict in &conflicts {
+                eprintln!("csv-preview: {}", conflict.message());
+            }
+            if !force {
+                eprintln!(
+                    "csv-preview: registration refused; run with force to replace the foreign handler"
+                );
+                return ERROR_ALREADY_EXISTS;
             }
         }
-        if let Err((error, rollback_errors)) = apply_plan(&mut WindowsRegistry, &plan) {
-            eprintln!(
-                "csv-preview: registration failed: {error}; rollback errors: {rollback_errors:?}"
-            );
-            return E_FAIL;
+        Err(error) => {
+            // The preflight cannot prove safety but also found no foreign
+            // value; proceed as before and let apply_plan's rollback bound
+            // the damage.
+            eprintln!("csv-preview: registration preflight failed: {error}");
         }
-        S_OK
     }
+    let plan = register_plan(module);
+    if let Err((error, rollback_errors)) = apply_plan(&mut WindowsRegistry, &plan) {
+        eprintln!(
+            "csv-preview: registration failed: {error}; rollback errors: {rollback_errors:?}"
+        );
+        return E_FAIL;
+    }
+    S_OK
 }
 
 fn unregister_module() -> HRESULT {
@@ -1458,12 +1466,42 @@ fn unregister_module() -> HRESULT {
     }
 }
 
+/// CLI entry for `csv-viewer.exe --register` (cfg(windows) only). The package
+/// is registered from the running executable's own directory; without a DLL
+/// next to it there is nothing to register.
+pub fn register_command(force: bool) -> HRESULT {
+    match unsafe { module_path() } {
+        Some(path) => register_module(&path.to_string_lossy(), force),
+        None => {
+            eprintln!(
+                "csv-preview: this DLL was not found through the running executable; \
+                 --register only works for modules on disk"
+            );
+            E_FAIL
+        }
+    }
+}
+
+/// CLI entry for `csv-viewer.exe --unregister` (cfg(windows) only).
+pub fn unregister_command() -> HRESULT {
+    unregister_module()
+}
+
 struct WindowsRegistry;
 
 impl Registry for WindowsRegistry {
     type Error = String;
     fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, String> {
-        unsafe { read_value(key, name) }
+        unsafe { read_value_under(HKEY_CURRENT_USER, &registry_path(key), name) }
+    }
+    fn read_classes_root(
+        &mut self,
+        key: &str,
+        name: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        // HKEY_CLASSES_ROOT is the HKLM∪HKCU merge; writes keep going to the
+        // user hive, this is only for the preflight.
+        unsafe { read_value_under(HKEY_CLASSES_ROOT, key, name) }
     }
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), String> {
         unsafe { delete_value(key, name) }
@@ -1479,47 +1517,6 @@ fn registry_path(key: &str) -> String {
     } else {
         format!("Software\\Classes\\{key}")
     }
-}
-
-unsafe fn read_default(key: &str) -> Option<String> {
-    let full = wide(&registry_path(key));
-    let mut handle: HKEY = ptr::null_mut();
-    if RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle) != 0 {
-        return None;
-    }
-    let mut value_type = 0u32;
-    let mut length = 0u32;
-    let status = RegQueryValueExW(
-        handle,
-        ptr::null(),
-        ptr::null_mut(),
-        &mut value_type,
-        ptr::null_mut(),
-        &mut length,
-    );
-    if status != 0 || length == 0 {
-        RegCloseKey(handle);
-        return None;
-    }
-    let mut buffer = vec![0u8; length as usize];
-    let status = RegQueryValueExW(
-        handle,
-        ptr::null(),
-        ptr::null_mut(),
-        &mut value_type,
-        buffer.as_mut_ptr(),
-        &mut length,
-    );
-    RegCloseKey(handle);
-    if status != 0 {
-        return None;
-    }
-    let utf16: Vec<u16> = buffer
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .take_while(|unit| *unit != 0)
-        .collect();
-    Some(String::from_utf16_lossy(&utf16))
 }
 
 unsafe fn write_value(entry: &RegistryValue) -> Result<(), String> {
@@ -1573,10 +1570,14 @@ unsafe fn delete_value(key: &str, name: Option<&str>) -> Result<(), String> {
     }
 }
 
-unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<Value>, String> {
-    let full = wide(&registry_path(key));
+unsafe fn read_value_under(
+    root: HKEY,
+    key: &str,
+    name: Option<&str>,
+) -> Result<Option<Value>, String> {
+    let full = wide(key);
     let mut handle: HKEY = ptr::null_mut();
-    let status = RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle);
+    let status = RegOpenKeyExW(root, full.as_ptr(), 0, KEY_READ, &mut handle);
     if status == 2 {
         return Ok(None);
     }

@@ -8,6 +8,7 @@ authors.workspace = true
 description = "Small companion CSV viewer with an explicit scan-coverage display"
 
 [dependencies]
+csv-preview = { path = "../csv-preview" }
 csvview-core = { path = "../csv-core" }
 crossterm.workspace = true
 unicode-width.workspace = true
