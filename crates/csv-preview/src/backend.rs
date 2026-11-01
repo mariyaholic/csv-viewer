@@ -24,6 +24,10 @@ use csvview_core::{ScanProgress, ScanReport, ScanRequest};
 
 use crate::{FullScanBackend, SpoolSource};
 
+/// CREATE_NO_WINDOW: the child never gets its own console window.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[derive(Debug, Clone)]
 pub struct WorkerBackend {
     pub worker_path: PathBuf,
@@ -88,12 +92,23 @@ impl WorkerBackend {
             .path
             .parent()
             .ok_or_else(|| "spool path has no parent directory".to_string())?;
-        let mut child = Command::new(&self.worker_path)
+        let mut command = Command::new(&self.worker_path);
+        command
             .arg("--spool-dir")
             .arg(spool_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            // The worker is a console-subsystem executable and the preview
+            // host (prevhost.exe) has no console: without this attribute
+            // Windows allocates and flashes a console window for every full
+            // scan. Piped stdio is unaffected by CREATE_NO_WINDOW.
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = command
             .spawn()
             .map_err(|error| format!("cannot start worker: {error}"))?;
         let mut stdin = child
