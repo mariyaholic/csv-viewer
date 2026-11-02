@@ -1,0 +1,13 @@
+[package]
+name = "csv-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+viewer-shell = { path = "../viewer-shell" }
+csvview-core = { path = "../csv-core" }
+csv-protocol = { path = "../csv-protocol" }
+serde_json.workspace = true

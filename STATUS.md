@@ -1,5 +1,34 @@
 # Status
 
+## Standalone desktop — implemented first slice (2026-11-02)
+
+This supersedes the architecture-only note below; it is not native release acceptance.
+
+- Native portable GUI plus companion worker; no COM registration, elevation or
+  terminal needed. Open/path/drop, reload/cancel, bounded owner-data sample table,
+  shown-row inspector/copy, in-window errors and six live theme choices.
+- Paper, Ink, PC-98, Doloris, Sumimi and derived Marigold. Uika OFL fonts are
+  process-private; standard controls retain system selection/button rendering.
+- Worker supervision includes a modal-independent deadline, cancellation,
+  kill-on-close Windows job, bounded transfer/response/display and private spools.
+  Reentrant paint reads a separate copied snapshot, not a mutable document borrow.
+- Shared shell source is byte-identical and content-pinned in SOURCE.json.
+  Existing worker wire protocols, CLI and Explorer/Low-IL behavior are unchanged.
+- Debug/unsigned Windows GNU portable ZIP built, extracted payload hashes checked,
+  actual app/fixture readback exercised under Wine. Both native smoke hosts verify
+  owner-data cells, selected-row inspection, clipboard, reload, six live themes,
+  close/reopen. Missing worker errors and read-only source hashes checked.
+- Native Windows dialog/drop, keyboard/Narrator/UIA, DPI/high contrast, font
+  fallback, clean-machine/MSVC/signing and owner acceptance remain OPEN. Wine
+  is corroborating evidence only. No release or new remote PR is claimed.
+- See docs/STANDALONE-USAGE.md for exact preview limits and follow-on milestones.
+
+CSV: 145 Linux / 156 Windows tests passed; one ignored integration was also
+explicitly enabled and passed on each target.
+Strict desktop/shell Windows Clippy and formatting pass. Final shared process
+tests were also rerun after fixture-isolation hardening. Full-suite logs and
+actual GUI captures live in the portfolio verification directory.
+
 ## Standalone desktop architecture — proposed 2026-11-02
 
 - Added `docs/STANDALONE-ARCHITECTURE.md`: GUI boundaries, truthful sample/scan

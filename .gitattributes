@@ -7,3 +7,7 @@ crates/csv-core/tests/fixtures/** -text
 # Shell scripts must execute on Linux even with core.autocrlf=true.
 *.sh text eol=lf
 *.ps1 text eol=lf
+
+# Shared-shell content pins must survive Windows checkout.
+crates/viewer-shell/** text eol=lf
+*.ttf binary

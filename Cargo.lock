@@ -62,6 +62,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "csv-desktop"
+version = "0.1.0"
+dependencies = [
+ "csv-protocol",
+ "csvview-core",
+ "serde_json",
+ "viewer-shell",
+]
+
+[[package]]
 name = "csv-preview"
 version = "0.1.0"
 dependencies = [
@@ -413,6 +423,13 @@ name = "unicode-width"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
+
+[[package]]
+name = "viewer-shell"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "wasi"
