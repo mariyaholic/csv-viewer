@@ -156,6 +156,18 @@ const IID_IPREVIEWHANDLER: GUID = guid(
     0x4C1C,
     [0xA5, 0x62, 0x0D, 0x56, 0x42, 0x50, 0x83, 0x6F],
 );
+const IID_IOBJECTWITHSITE: GUID = guid(
+    0xFC48_01A3,
+    0x2BA9,
+    0x11CF,
+    [0xA2, 0x29, 0x00, 0xAA, 0x00, 0x3D, 0x73, 0x52],
+);
+const IID_IPREVIEWHANDLERFRAME: GUID = guid(
+    0xFEC8_7AAF,
+    0x35F9,
+    0x447A,
+    [0xAD, 0x79, 0x43, 0xA1, 0x03, 0xD4, 0x51, 0x4D],
+);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -309,6 +321,45 @@ struct InitInterface {
     owner: *mut PreviewObject,
 }
 
+/// The IUnknown core slots; identical at the start of every COM vtable, so
+/// generic `QueryInterface`/`Release` dispatch works through any interface.
+#[repr(C)]
+struct IUnknownVtbl {
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    release: unsafe extern "system" fn(*mut c_void) -> ULONG,
+}
+
+#[repr(C)]
+struct IObjectWithSiteVtbl {
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    release: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    set_site: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
+    get_site: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+}
+
+/// The subset of `IPreviewHandlerFrame` the handler calls back into (07A-11).
+#[repr(C)]
+struct IPreviewHandlerFrameVtbl {
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    release: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    get_window_context: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
+    translate_accelerator: unsafe extern "system" fn(*mut c_void, *mut MSG) -> HRESULT,
+}
+
+/// `IObjectWithSite` on the preview object itself, mirroring the inventory
+/// `InitInterface` pattern (07A-11).
+#[repr(C)]
+struct SiteInterface {
+    vtbl: *const IObjectWithSiteVtbl,
+    owner: *mut PreviewObject,
+}
+
 #[repr(C)]
 struct PreviewObject {
     vtbl: *const IPreviewHandlerVtbl,
@@ -322,6 +373,11 @@ struct PreviewObject {
     session: Option<Arc<PreviewSession>>,
     text: Vec<u16>,
     init: InitInterface,
+    /// `IObjectWithSite` on the object itself (07A-11).
+    site: SiteInterface,
+    /// The host's `IPreviewHandlerFrame`, queried out of the site in
+    /// `SetSite`. An owned reference, released when the object is destroyed.
+    frame: *mut c_void,
 }
 
 static PREVIEW_VTBL: IPreviewHandlerVtbl = IPreviewHandlerVtbl {
@@ -342,6 +398,14 @@ static INIT_VTBL: IInitializeWithStreamVtbl = IInitializeWithStreamVtbl {
     add_ref: init_add_ref,
     release: init_release,
     initialize: init_initialize,
+};
+
+static SITE_VTBL: IObjectWithSiteVtbl = IObjectWithSiteVtbl {
+    query_interface: site_query_interface,
+    add_ref: site_add_ref,
+    release: site_release,
+    set_site: site_set_site,
+    get_site: site_get_site,
 };
 
 #[repr(C)]
@@ -406,6 +470,10 @@ unsafe fn object_release(object: *mut PreviewObject) -> ULONG {
     let previous = (*object).refcount.fetch_sub(1, Ordering::SeqCst);
     if previous == 1 {
         LIVE_COM_OBJECTS.fetch_sub(1, Ordering::SeqCst);
+        // Release the host frame we hold before the object's state is dropped.
+        let frame = (*object).frame;
+        (*object).frame = ptr::null_mut();
+        release_interface(frame);
         drop(Box::from_raw(object));
         if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 {
             // The last object is gone, so its windows are destroyed too;
@@ -435,6 +503,10 @@ unsafe fn query_preview_interface(
     } else if iid == IID_IINITIALIZEWITHSTREAM {
         object_add_ref(object);
         *ppv = &mut (*object).init as *mut InitInterface as *mut c_void;
+        S_OK
+    } else if iid == IID_IOBJECTWITHSITE {
+        object_add_ref(object);
+        *ppv = &mut (*object).site as *mut SiteInterface as *mut c_void;
         S_OK
     } else {
         E_NOINTERFACE
@@ -479,6 +551,98 @@ unsafe extern "system" fn init_release(this: *mut c_void) -> ULONG {
     contain_ulong(|| unsafe {
         let interface = &*(this as *const InitInterface);
         object_release(interface.owner)
+    })
+}
+
+/// Call `QueryInterface` through an arbitrary COM interface pointer. The
+/// caller owns the returned reference when the call succeeds.
+unsafe fn query_interface_ptr(
+    interface: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
+    let table = *(interface as *mut *const IUnknownVtbl);
+    ((*table).query_interface)(interface, riid, ppv)
+}
+
+/// Call `Release` through an arbitrary COM interface pointer.
+unsafe fn release_interface(interface: *mut c_void) {
+    if interface.is_null() {
+        return;
+    }
+    let table = *(interface as *mut *const IUnknownVtbl);
+    ((*table).release)(interface);
+}
+
+unsafe extern "system" fn site_query_interface(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
+    contain_hresult(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        query_preview_interface(interface.owner, riid, ppv)
+    })
+}
+
+unsafe extern "system" fn site_add_ref(this: *mut c_void) -> ULONG {
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        object_add_ref(interface.owner)
+    })
+}
+
+unsafe extern "system" fn site_release(this: *mut c_void) -> ULONG {
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        object_release(interface.owner)
+    })
+}
+
+/// `IObjectWithSite::SetSite` — store the host site and query it for the
+/// `IPreviewHandlerFrame` the accelerator forwarder calls back into
+/// (07A-11, mirroring parquet-viewer L5).
+unsafe extern "system" fn site_set_site(this: *mut c_void, site: *mut c_void) -> HRESULT {
+    contain_hresult(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        let object = interface.owner;
+        // Replace any previous site's frame reference.
+        release_interface((*object).frame);
+        (*object).frame = ptr::null_mut();
+        if site.is_null() {
+            // Explorer passes NULL to tear the site down.
+            return S_OK;
+        }
+        let mut frame: *mut c_void = ptr::null_mut();
+        let hr = query_interface_ptr(site, &IID_IPREVIEWHANDLERFRAME, &mut frame);
+        if hr == S_OK && !frame.is_null() {
+            (*object).frame = frame;
+        }
+        // Accept the site even when it exposes no frame: the host may hand
+        // over an object that implements other interfaces too.
+        S_OK
+    })
+}
+
+/// `IObjectWithSite::GetSite`.
+unsafe extern "system" fn site_get_site(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
+    contain_hresult(|| unsafe {
+        if riid.is_null() || ppv.is_null() {
+            return E_POINTER;
+        }
+        *ppv = ptr::null_mut();
+        let interface = &*(this as *const SiteInterface);
+        let frame = (*interface.owner).frame;
+        if frame.is_null() {
+            // No site: `IObjectWithSite` fails this call.
+            return E_FAIL;
+        }
+        // Query outside of any lock: the frame may re-enter this handler.
+        query_interface_ptr(frame, riid, ppv)
     })
 }
 
@@ -765,10 +929,25 @@ unsafe extern "system" fn preview_query_focus(_this: *mut c_void, focus: *mut HW
 }
 
 unsafe extern "system" fn preview_translate_accelerator(
-    _this: *mut c_void,
-    _message: *mut MSG,
+    this: *mut c_void,
+    message: *mut MSG,
 ) -> HRESULT {
-    contain_hresult(|| S_FALSE)
+    contain_hresult(|| unsafe {
+        if message.is_null() {
+            return E_POINTER;
+        }
+        // The pane consumes nothing through this entry point: its local
+        // hotkey arrives as a directly focused WM_KEYDOWN (07A-11 subset 1).
+        // Anything the host offers here belongs to the host frame, so an
+        // unhandled key is forwarded; fail closed (S_FALSE) without a site,
+        // so the shell keeps the key.
+        let frame = (*object_from_this(this)).frame;
+        if frame.is_null() {
+            return S_FALSE;
+        }
+        let table = *(frame as *mut *const IPreviewHandlerFrameVtbl);
+        ((*table).translate_accelerator)(frame, message)
+    })
 }
 
 unsafe extern "system" fn preview_unload(this: *mut c_void) -> HRESULT {
@@ -1433,8 +1612,14 @@ unsafe extern "system" fn factory_create_instance(
                 vtbl: &INIT_VTBL,
                 owner: ptr::null_mut(),
             },
+            site: SiteInterface {
+                vtbl: &SITE_VTBL,
+                owner: ptr::null_mut(),
+            },
+            frame: ptr::null_mut(),
         });
         object.init.owner = &mut *object as *mut PreviewObject;
+        object.site.owner = &mut *object as *mut PreviewObject;
         LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
         let raw = Box::into_raw(object);
         let result = query_preview_interface(raw, riid, ppv);
@@ -1935,6 +2120,7 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     const COINIT_APARTMENTTHREADED: u32 = 0x2;
 
@@ -2036,6 +2222,11 @@ mod tests {
                     vtbl: &INIT_VTBL,
                     owner: ptr::null_mut(),
                 },
+                site: SiteInterface {
+                    vtbl: &SITE_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                frame: ptr::null_mut(),
             }));
             SetWindowLongPtrW(pane, GWLP_USERDATA, object as isize);
 
@@ -2065,6 +2256,201 @@ mod tests {
             DestroyWindow(pane);
             DestroyWindow(parent);
             drop(Box::from_raw(object));
+        }
+    }
+
+    /// A minimal host `IPreviewHandlerFrame` that records the keys it is
+    /// asked to translate, mirroring parquet-viewer L5's harness (07A-11).
+    #[allow(dead_code)]
+    struct FakeFrame {
+        vtbl: *const IPreviewHandlerFrameVtbl,
+        refs: AtomicU32,
+        translated: AtomicBool,
+        last_key: AtomicUsize,
+    }
+
+    unsafe extern "system" fn fake_frame_qi(
+        this: *mut c_void,
+        iid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if iid.is_null() || out.is_null() {
+            return E_POINTER;
+        }
+        *out = ptr::null_mut();
+        let iid = *iid;
+        if iid == IID_IUNKNOWN || iid == IID_IPREVIEWHANDLERFRAME {
+            (*(this as *mut FakeFrame))
+                .refs
+                .fetch_add(1, Ordering::SeqCst);
+            *out = this;
+            S_OK
+        } else {
+            E_NOINTERFACE
+        }
+    }
+
+    unsafe extern "system" fn fake_frame_add_ref(this: *mut c_void) -> ULONG {
+        let frame = this as *mut FakeFrame;
+        (*frame).refs.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    unsafe extern "system" fn fake_frame_release(this: *mut c_void) -> ULONG {
+        let frame = this as *mut FakeFrame;
+        let previous = (*frame).refs.fetch_sub(1, Ordering::SeqCst);
+        if previous == 1 {
+            drop(Box::from_raw(frame));
+            0
+        } else {
+            previous - 1
+        }
+    }
+
+    unsafe extern "system" fn fake_frame_get_window_context(
+        _this: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if out.is_null() {
+            return E_POINTER;
+        }
+        *out = ptr::null_mut();
+        E_FAIL
+    }
+
+    unsafe extern "system" fn fake_frame_translate_accelerator(
+        this: *mut c_void,
+        message: *mut MSG,
+    ) -> HRESULT {
+        let frame = this as *mut FakeFrame;
+        if !message.is_null() {
+            (*frame).last_key.store((*message).wParam, Ordering::SeqCst);
+            (*frame).translated.store(true, Ordering::SeqCst);
+        }
+        S_OK
+    }
+
+    static FAKE_FRAME_VTBL: IPreviewHandlerFrameVtbl = IPreviewHandlerFrameVtbl {
+        query_interface: fake_frame_qi,
+        add_ref: fake_frame_add_ref,
+        release: fake_frame_release,
+        get_window_context: fake_frame_get_window_context,
+        translate_accelerator: fake_frame_translate_accelerator,
+    };
+
+    /// 07A-11 subset 2: `IObjectWithSite` hands the handler the host site,
+    /// from which we query `IPreviewHandlerFrame`; unhandled keys offered
+    /// through `TranslateAccelerator` are then forwarded to the frame.
+    /// Without a site the handler fails closed (S_FALSE).
+    #[test]
+    fn unhandled_keys_forward_to_the_host_frame() {
+        unsafe {
+            let object = Box::new(PreviewObject {
+                vtbl: &PREVIEW_VTBL,
+                refcount: AtomicU32::new(1),
+                stream: ptr::null_mut(),
+                parent: ptr::null_mut(),
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                window: ptr::null_mut(),
+                font: ptr::null_mut(),
+                brush: ptr::null_mut(),
+                session: None,
+                text: Vec::new(),
+                init: InitInterface {
+                    vtbl: &INIT_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                site: SiteInterface {
+                    vtbl: &SITE_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                frame: ptr::null_mut(),
+            });
+            let object = Box::into_raw(object);
+            (*object).init.owner = object;
+            (*object).site.owner = object;
+
+            // Without a site, TranslateAccelerator fails closed and
+            // GetSite fails.
+            let msg = MSG {
+                hwnd: ptr::null_mut(),
+                message: WM_KEYDOWN,
+                wParam: 0x09, // VK_TAB belongs to the host
+                lParam: 0,
+                time: 0,
+                pt: POINT { x: 0, y: 0 },
+            };
+            assert_eq!(
+                preview_translate_accelerator(object as *mut c_void, &msg as *const _ as *mut MSG),
+                S_FALSE
+            );
+            let mut site: *mut c_void = ptr::null_mut();
+            assert_eq!(
+                query_preview_interface(object, &IID_IOBJECTWITHSITE, &mut site),
+                S_OK
+            );
+            let site_table = *(site as *mut *const IObjectWithSiteVtbl);
+            let mut got: *mut c_void = ptr::null_mut();
+            assert_eq!(
+                ((*site_table).get_site)(site, &IID_IUNKNOWN, &mut got),
+                E_FAIL,
+                "GetSite without a site must fail"
+            );
+
+            // Attach a fake host frame through SetSite.
+            let frame = Box::into_raw(Box::new(FakeFrame {
+                vtbl: &FAKE_FRAME_VTBL,
+                refs: AtomicU32::new(1),
+                translated: AtomicBool::new(false),
+                last_key: AtomicUsize::new(0),
+            }));
+            assert_eq!(((*site_table).set_site)(site, frame as *mut c_void), S_OK);
+            assert!(!(*object).frame.is_null(), "SetSite must store the frame");
+
+            // GetSite must hand back a frame reference through its vtable.
+            assert_eq!(
+                ((*site_table).get_site)(site, &IID_IUNKNOWN, &mut got),
+                S_OK
+            );
+            assert_eq!(
+                got, frame as *mut c_void,
+                "GetSite must return the stored frame"
+            );
+            release_interface(got);
+
+            // An unhandled key (Tab) must be forwarded to the frame.
+            assert_eq!(
+                preview_translate_accelerator(object as *mut c_void, &msg as *const _ as *mut MSG),
+                S_OK
+            );
+            assert!((*frame).translated.load(Ordering::SeqCst));
+            assert_eq!((*frame).last_key.load(Ordering::SeqCst), 0x09);
+
+            // SetSite(NULL) tears the site down: the frame reference is
+            // released and forwarding fails closed again.
+            assert_eq!(((*site_table).set_site)(site, ptr::null_mut()), S_OK);
+            assert!((*object).frame.is_null());
+            assert_eq!(
+                preview_translate_accelerator(object as *mut c_void, &msg as *const _ as *mut MSG),
+                S_FALSE
+            );
+            assert_eq!(
+                (*frame).refs.load(Ordering::SeqCst),
+                1,
+                "the frame reference stored in the handled object must be released with the site"
+            );
+
+            // Teardown: the object is dropped directly (release bookkeeping
+            // through the COM counters is exercised by the factory path), and
+            // the frame's creation reference goes with the test. The stored
+            // frame reference was already released by SetSite(NULL), hence
+            // the remaining count of 1.
+            drop(Box::from_raw(object));
+            release_interface(frame as *mut c_void);
         }
     }
 
@@ -2141,6 +2527,11 @@ mod tests {
                     vtbl: &INIT_VTBL,
                     owner: ptr::null_mut(),
                 },
+                site: SiteInterface {
+                    vtbl: &SITE_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                frame: ptr::null_mut(),
             }));
             SetWindowLongPtrW(window, GWLP_USERDATA, object as isize);
 
