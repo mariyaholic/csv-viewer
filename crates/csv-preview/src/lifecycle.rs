@@ -13,7 +13,9 @@ static LIVE_THREADS: AtomicU32 = AtomicU32::new(0);
 
 /// RAII token held by a running library thread. Construct via
 /// [`LiveThread::enter`] inside the thread; it cannot be cloned or built
-/// outside, so every token corresponds to exactly one thread lifetime.
+/// outside, so every token corresponds to exactly one thread lifetime. The
+/// unit field exists only to make outside construction impossible.
+#[allow(dead_code)]
 pub struct LiveThread(());
 
 impl LiveThread {

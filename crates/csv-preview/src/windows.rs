@@ -58,6 +58,7 @@ const E_FAIL: HRESULT = 0x8000_4005u32 as i32;
 const CLASS_E_NOAGGREGATION: HRESULT = 0x8004_0110u32 as i32;
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = 0x8004_0111u32 as i32;
 const STG_E_ACCESSDENIED: HRESULT = 0x8003_0005u32 as i32;
+const ERROR_FILE_NOT_FOUND: LONG = 2;
 const ERROR_ALREADY_EXISTS: HRESULT = 0x8007_00B7u32 as i32;
 
 const STGM_WRITE_BITS: u32 = 0x0000_0003;
@@ -1509,6 +1510,16 @@ impl Registry for WindowsRegistry {
     fn write(&mut self, entry: &RegistryValue) -> Result<(), String> {
         unsafe { write_value(entry) }
     }
+    fn delete_tree(&mut self, key: &str) -> Result<(), String> {
+        let full = wide(&registry_path(key));
+        let status = unsafe { SHDeleteKeyW(HKEY_CURRENT_USER, full.as_ptr()) };
+        // A tree that was never created is already as removed as it can be.
+        if status == 0 || status == ERROR_FILE_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(format!("SHDeleteKeyW failed with {status}"))
+        }
+    }
 }
 
 fn registry_path(key: &str) -> String {
@@ -1787,6 +1798,12 @@ extern "system" {
     fn SetTextColor(device: HDC, color: u32) -> u32;
     fn SetBkMode(device: HDC, mode: i32) -> i32;
     fn CreateSolidBrush(color: u32) -> HBRUSH;
+}
+
+#[link(name = "shlwapi")]
+extern "system" {
+    /// Deletes a key and everything below it (the C1 uninstall policy).
+    fn SHDeleteKeyW(root: HKEY, sub_key: LPCWSTR) -> LONG;
 }
 
 #[link(name = "advapi32")]
