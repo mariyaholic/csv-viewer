@@ -515,7 +515,13 @@ fn write_spool<R: Read>(
             }
             let allowed = (max_spool - bytes) as usize;
             if allowed == 0 {
-                truncated = true;
+                // 07A-09: the cap is filled exactly. A source that yields
+                // nothing more is fully spooled, not truncated; a single
+                // further byte proves the source outgrew the cap. The +1
+                // byte copy (`copy_owned_source`) feeds this probe.
+                let mut probe_slot = [0u8; 1];
+                let probe = source.read(&mut probe_slot)?;
+                truncated = probe > 0;
                 break;
             }
             let take = allowed.min(buffer.len());
