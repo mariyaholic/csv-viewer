@@ -3,6 +3,7 @@
 //! Bounded preview pipeline and Windows Explorer preview handler.
 
 pub mod backend;
+pub mod lifecycle;
 pub mod registration;
 pub mod session;
 #[cfg(any(windows, csvview_windows_check))]

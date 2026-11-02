@@ -23,6 +23,13 @@ pub struct SourceSpec {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// 07A-13: the `Scan` variant carries `SourceSpec` plus the scan request's
+// limits, so it dominates the enum's size. Hardening it for lint (boxing the
+// payloads) would complicate the serde wire format the worker protocol tests
+// pin, for no real cost: at most one message is in flight per frame. The
+// allow is deliberate, with the frame cap (`max_frame_bytes`) as the working
+// bound on size.
+#[allow(clippy::large_enum_variant)]
 pub enum ClientMessage {
     Hello {
         protocol_version: u32,
@@ -54,6 +61,11 @@ pub enum ErrorCode {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// 07A-13: like `ClientMessage::Scan`, the `Result` variant carries the full
+// `ScanReport` and dominates the enum's size. Reports are bounded and sent
+// exactly once per scan; boxing them would obfuscate the round-trip tests
+// for no gain, so the allow is deliberate.
+#[allow(clippy::large_enum_variant)]
 pub enum WorkerMessage {
     Ready {
         protocol_version: u32,

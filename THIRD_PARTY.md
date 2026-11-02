@@ -91,6 +91,29 @@ BSL-1.0).
   licence remains MIT OR Apache-2.0.
 - `LICENSE` is unchanged; `NOTICE` points to this third-party notice inventory.
 
+## Windows GNU builds (MinGW-w64 runtime)
+
+`scripts/build-windows.sh` builds `x86_64-pc-windows-gnu` binaries ("on Linux
+with the x64 GNU target and MinGW", README). Link inspection of the built DLL
+(`objdump -p csv_preview.dll`, 2026-11-02) shows the MinGW-w64/GCC runtime is
+statically linked: no `msvcrt.dll`, `libgcc_s*.dll` or `libwinpthread-1.dll`
+imports appear — the C runtime arrives through the Windows
+`api-ms-win-crt-*` system forwarders, so these components are embedded in
+GNU-built binaries:
+
+| Component | Source | Declared terms | Notes |
+| --- | --- | --- | --- |
+| MinGW-w64 runtime (crt, headers, static glue) | MinGW-w64 14.0.0 (winlibs GCC 16.2.0 UCRT build) | mingw-w64 licence (MIT-style) | embedded in every GNU-built binary |
+| winpthreads | MinGW-w64 14.0.0 | MIT | statically linked (no DLL import) |
+| libgcc / GCC runtime glue | GCC (winlibs GCC 16.2.0) | GPL-3.0-or-later WITH GCC Runtime Library Exception | statically linked; the exception covers distributing binaries built with it |
+
+The shipped Windows releases use `scripts/build-windows.ps1` (MSVC, the CI
+release job), so a shipped release contains none of the components above; the
+GNU path is the documented Linux cross-compile convenience. Note on the GPL
+line: the GCC runtime exception is what makes static libgcc redistributable,
+unlike the GPL-only code this project otherwise excludes. Upstream licence
+texts, like everything in this inventory, must be re-checked before a release.
+
 ## Offline audit and data notices
 
 The inventory above was checked against Cargo.lock and cargo-deny 0.20.2

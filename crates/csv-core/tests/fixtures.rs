@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use csvview_core::{
     scan_file, DateFormat, DateRangeRequest, DateRangeStatus, Dialect, DialectChoice,
-    EncodingChoice, EncodingKind, HeaderChoice, ScanRequest, WarningCode,
+    EncodingChoice, EncodingKind, HeaderChoice, IncompleteReason, ScanRequest, WarningCode,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -162,7 +162,10 @@ fn explicit_overrides_win_over_detection() {
 
 #[test]
 fn huge_field_is_truncated_with_a_warning() {
-    let big = "x".repeat(200_000);
+    // Long relative to the 1024-character display cap but still inside the
+    // per-field byte budget (`max_field_chars * 4`), so the record finishes
+    // and only the display truncates.
+    let big = "x".repeat(3_000);
     let text = format!("a,b\n1,{big}\n");
     let mut request = ScanRequest::full();
     request.header = HeaderChoice::Present;
@@ -175,6 +178,27 @@ fn huge_field_is_truncated_with_a_warning() {
         .warnings
         .iter()
         .any(|warning| warning.code == WarningCode::LongField));
+}
+
+#[test]
+fn field_beyond_the_byte_budget_stops_the_scan_as_partial() {
+    // A single field past `max_field_chars * 4` ends the scan early with a
+    // parse error: memory must stay bounded inside one record, not only
+    // between records.
+    let big = "x".repeat(200_000);
+    let text = format!("a,b\n1,{big}\n");
+    let mut request = ScanRequest::full();
+    request.header = HeaderChoice::Present;
+    request.limits.max_field_chars = 1024;
+    let report = scan_text(&text, &request);
+    assert!(!report.complete);
+    assert_eq!(report.incomplete_reason, Some(IncompleteReason::ParseError));
+    assert!(report
+        .parse_error
+        .as_deref()
+        .is_some_and(|error| error.contains("per-field byte budget")));
+    // No data record ever finished: the first one is the oversized field.
+    assert_eq!(report.scanned.data_records, 0);
 }
 
 fn scan_text(text: &str, request: &ScanRequest) -> csvview_core::ScanReport {

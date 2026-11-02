@@ -27,7 +27,7 @@
 
 ## Licensing
 
-[measured] The Manager requires Apache-2.0 for every project ([Amendment 10a](/workspace/qol-portfolio/BRIEF-v5.md:40)). Include the full Apache-2.0 text in `LICENSE`, use `SPDX-License-Identifier: Apache-2.0` on project source where practical, and open every README with “Made by Maria”. Each UI app includes an About screen with “Made by Maria”. Store copy, where applicable: “free and open source (Apache-2.0)”. The root `NOTICE` is exactly:
+[measured] The Manager requires Apache-2.0 for every project ([Amendment 10a](/workspace/qol-portfolio/BRIEF-v5.md:40)). Include the full Apache-2.0 text in `LICENSE`, use `SPDX-License-Identifier: Apache-2.0` on project source where practical, and open every README with “Made by Maria”. Each UI app includes an About screen with “Made by Maria”. Store copy, where applicable: “free and open source (Apache-2.0)”. The root `NOTICE` starts with the template (C2 ruling, `docs/fix-plan/DECISIONS.md`):
 
 ```text
 CSV viewer and preview
@@ -36,7 +36,9 @@ Copyright 2026 Maria (https://github.com/mariyaholic)
 Made by Maria. This product includes software developed by Maria.
 ```
 
-[inferred] MIT, BSD, ISC, Apache-2.0 and Zlib dependencies are compatible subject to their terms; retain required third-party notices in `THIRD_PARTY` so the required root template stays exact. Audit all code, transitive dependencies and assets; do not reuse GPL code such as mukunku/ParquetViewer. Rights and obligations still require review.
+Below the template, `NOTICE` may carry one optional, clearly titled third-party section; this repo keeps the two pointer lines to `THIRD_PARTY.md` in that section.
+
+[inferred] MIT, BSD, ISC, Apache-2.0 and Zlib dependencies are compatible subject to their terms; retain third-party notices in `THIRD_PARTY` so the `NOTICE` template stays the exact notice head. Audit all code, transitive dependencies and assets; do not reuse GPL code such as mukunku/ParquetViewer. Rights and obligations still require review.
 
 [measured] The [SignPath application draft](/workspace/qol-portfolio/SIGNPATH_APPLICATION_DRAFT.md:1) is draft only; a public repository and an existing public release are prerequisites and the Manager decides publication/application. Apache-2.0 preserves eligibility; no application or publishing is authorized by this architecture.
 
