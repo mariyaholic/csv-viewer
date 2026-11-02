@@ -1,0 +1,13 @@
+{
+  "version": "0.1.0",
+  "origin": "csv-viewer / feat/standalone-viewer (local source snapshot)",
+  "revision_kind": "sha256 content pin; not a published upstream release",
+  "files": {
+    "Cargo.toml": "55ff42bde9b7f3df841aa98a3e3a6247fedff3edce077f6b60f2a7be08a08efb",
+    "src/lib.rs": "5e76821fcbcfdb1504137c7a3666b3e4a2c07b207bf284962ade7ee13853ecab",
+    "src/supervisor.rs": "006609c7ec5feb2050112f7c96a9095056d4620ce56daf9a2151da91b4550b34",
+    "src/win32.rs": "6a2f269ad941088dd5d577cf6130cea5058df2395bc9d60b7a6fbafc352cec7a",
+    "tests/native-smoke.c": "808b87f44e3080de4b3251c88e3ab3764e4ee1a4e5945de7379f637edbe4f784"
+  },
+  "sync_policy": "Review changes in both repos; update this identical manifest only after byte-for-byte synchronization."
+}

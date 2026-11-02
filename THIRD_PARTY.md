@@ -1,5 +1,23 @@
 # Third-party software
 
+## Standalone desktop additions
+
+The standalone shell uses `tempfile = 3.10.1` (MIT OR Apache-2.0) for
+operation-private spools; its Windows/Linux transitive notices are included in
+THIRD_PARTY_LICENSES.txt. Existing CSV already used this pinned dependency;
+Parquet adds it for the desktop host only. No new UI framework/bindings family
+is introduced: desktop Win32 calls use the same raw-FFI approach as existing code.
+
+Optional private font assets are Cinzel, Outfit and JetBrains Mono, from the
+Google Fonts `ofl/cinzel`, `ofl/outfit`, `ofl/jetbrainsmono` directories. Each is
+SIL OFL 1.1; copyright and full licence texts ship beside the original TTF files
+in `assets/desktop-fonts/` and the portable payload's `fonts/` directory.
+They are font assets, not Rust dependencies, not globally installed, and not
+relicensed as Apache-2.0. No proprietary Windows fonts are redistributed.
+Runtime fallback uses fonts supplied by Windows. GNU runtime distribution review
+and official MSVC/signing acceptance remain separate release gates.
+
+
 Made by Maria. Apache-2.0.
 
 This inventory covers the Rust dependencies recorded in `Cargo.lock`. Licences
