@@ -3,6 +3,20 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  # 07A-13: the platform-portable regression net (csv-core, csv-protocol,
+  # csv-worker, the cfg-gated parts of csv-preview and csv-viewer). The FFI
+  # module is Windows-only by cfg, so a cheap Linux unit-test job catches
+  # portable regressions without a Windows runner.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@cfcaf53ba4c621917ec7f78a66bff7a8848ddad4 # 1.85.0
+        with:
+          toolchain: 1.85.0
+      - run: cargo build --locked --workspace
+      - run: cargo test --locked --workspace
+
   windows:
     runs-on: windows-latest
     steps:
@@ -12,6 +26,36 @@ jobs:
           toolchain: 1.85.0
           components: rustfmt, clippy
       - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets
+      # 07A-13: strict clippy. The deliberate allow-list with reasons lives
+      # in the sources (csv-preview/src/windows.rs, csv-protocol/messages.rs),
+      # so no lint can return silently.
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
+      - name: Check dependency licences and bans (cargo-deny)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses bans
+
+  # Tagged releases only (Manager ruling for 07A-13 open question 2: no
+  # manual dispatch). The build script writes dist/ binaries plus SHA256SUMS.
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@cfcaf53ba4c621917ec7f78a66bff7a8848ddad4 # 1.85.0
+        with:
+          toolchain: 1.85.0
+      - name: Build the Windows artefacts
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+      - name: Attach the release assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            dist/csv-viewer.exe
+            dist/csv-worker.exe
+            dist/csv_preview.dll
+            dist/SHA256SUMS
