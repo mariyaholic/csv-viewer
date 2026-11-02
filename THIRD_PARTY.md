@@ -114,6 +114,23 @@ line: the GCC runtime exception is what makes static libgcc redistributable,
 unlike the GPL-only code this project otherwise excludes. Upstream licence
 texts, like everything in this inventory, must be re-checked before a release.
 
+## Licence bundle
+
+Both build scripts copy `LICENSE`, `NOTICE`, `THIRD_PARTY.md` and
+`THIRD_PARTY_LICENSES.txt` into `dist/` and include them in `SHA256SUMS`.
+The tag workflow attaches those documents as release assets alongside the binaries.
+Regenerate the committed Cargo licence texts after a lockfile change with
+`python3 scripts/generate-third-party-licenses.py`; verify with `--check`.
+On Windows use `python` instead of `python3`. Python 3 is a build-time
+requirement only. Populate the offline metadata cache first with
+`cargo fetch --locked` (the tag workflow does this explicitly).
+The generator takes licence texts from the actual cached registry packages;
+winapi's GNU import-library crate omits its own texts, so the generator uses
+the parent `winapi` crate only after checking matching repository and licence
+metadata. It refuses any other package with no licence text.
+This Rust bundle is not a substitute for reviewing GNU runtime distribution
+terms described above; official releases continue to use MSVC.
+
 ## Offline audit and data notices
 
 The inventory above was checked against Cargo.lock and cargo-deny 0.20.2

@@ -4,3 +4,6 @@
 # (run 41395676072). Pin the whole fixtures directory so checkout and
 # commit keep the committed bytes, whatever core.autocrlf says locally.
 crates/csv-core/tests/fixtures/** -text
+# Shell scripts must execute on Linux even with core.autocrlf=true.
+*.sh text eol=lf
+*.ps1 text eol=lf

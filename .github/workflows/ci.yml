@@ -58,6 +58,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@cfcaf53ba4c621917ec7f78a66bff7a8848ddad4 # 1.85.0
         with:
           toolchain: 1.85.0
+      - name: Fetch dependencies for the offline licence check
+        run: cargo fetch --locked
       - name: Build the Windows artefacts
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1
       - name: Attach the release assets
@@ -67,4 +69,8 @@ jobs:
             dist/csv-viewer.exe
             dist/csv-worker.exe
             dist/csv_preview.dll
+            dist/LICENSE
+            dist/NOTICE
+            dist/THIRD_PARTY.md
+            dist/THIRD_PARTY_LICENSES.txt
             dist/SHA256SUMS
