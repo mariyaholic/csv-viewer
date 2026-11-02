@@ -5,8 +5,9 @@
 //! Registration is per-user (`HKCU\Software\Classes`) and opt-in. The plan is
 //! kept separate from Win32 calls so key layout and conflict policy can be
 //! tested on Linux. The installer/UI must show [`REGISTRATION_WARNING`] before
-//! changing any association; unregistration removes only values that still
-//! match this handler.
+//! changing any association; unregistration removes only the values that
+//! still match this handler and then deletes this handler's own CLSID tree
+//! and association leaves (the C1 policy). Shared keys always stay.
 
 pub const CLSID_CSV_PREVIEW: &str = "{8f6a0f5e-3c4b-4a2e-9d7f-5b1c2e3a4f60}";
 pub const PREVIEW_HANDLER_CATEGORY: &str = "{8895b1c6-b41f-4c1c-a562-0d564250836f}";
@@ -171,6 +172,7 @@ pub fn association_keys() -> Vec<String> {
 
 /// Registry operations needed by unregistration. Missing keys and values are
 /// represented as `None` or success; other failures must be returned.
+/// A value registry for the ownership-checked registration plan.
 pub trait Registry {
     type Error;
     /// The per-user view (`HKCU\Software\Classes`).
@@ -187,6 +189,11 @@ pub trait Registry {
     }
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), Self::Error>;
     fn write(&mut self, entry: &RegistryValue) -> Result<(), Self::Error>;
+    /// Deletes a whole key tree including the named key itself. C1 policy:
+    /// the CLSID tree and the association leaves are named with this
+    /// handler's own class, so unregistration removes them outright instead
+    /// of leaving empty residue that could mask a machine-wide handler.
+    fn delete_tree(&mut self, key: &str) -> Result<(), Self::Error>;
 }
 
 /// Restore prior values after a failed write, unless another writer changed them.
@@ -244,9 +251,26 @@ pub fn unregister<R: Registry>(registry: &mut R, module_path: &str) -> Result<()
             }
         }
     }
-    // Shared keys must remain: checking emptiness and deleting is not atomic.
-    // The exclusive CLSID tree could be deleted, but is also left in place.
+    // C1 policy (fix-plan/DECISIONS.md): the CLSID tree is exclusive to this
+    // handler and the association leaves exist only because it wrote its
+    // default value into them, so unregistration deletes those trees
+    // outright; shared keys above them (.csv, .csv\ShellEx, PreviewHandlers,
+    // SystemFileAssociations\.csv) always stay.
+    for key in owned_trees() {
+        // A tree that was never created is fine to leave missing.
+        let _ = registry.delete_tree(&key);
+    }
     Ok(())
+}
+
+/// The trees this handler can delete outright on uninstall: its own CLSID
+/// tree plus the two association leaves the plan writes into.
+fn owned_trees() -> Vec<String> {
+    vec![
+        format!("CLSID\\{CLSID_CSV_PREVIEW}"),
+        format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+        format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"),
+    ]
 }
 
 /// A foreign preview handler that occupies an association this registration
@@ -404,6 +428,20 @@ mod tests {
                     .insert(entry.name.unwrap_or("").into(), entry.value.clone());
                 Ok(())
             }
+            fn delete_tree(&mut self, key: &str) -> Result<(), ()> {
+                let prefix = format!("{key}\\");
+                self.0.remove(key);
+                let owned: Vec<String> = self
+                    .0
+                    .keys()
+                    .filter(|existing| existing.starts_with(&prefix))
+                    .cloned()
+                    .collect();
+                for existing in owned {
+                    self.0.remove(&existing);
+                }
+                Ok(())
+            }
         }
         let mut registry = Fake::default();
         registry.key(".csv");
@@ -420,38 +458,125 @@ mod tests {
             .unwrap()
             .insert("Foreign".into(), Value::text("keep"));
         apply_plan(&mut registry, &register_plan("module.dll")).unwrap();
-        let association =
-            format!("SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
-        registry
-            .0
-            .get_mut(&association)
-            .unwrap()
-            .insert("".into(), Value::text("foreign handler"));
+        let csv_association = format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
         let clsid = format!("CLSID\\{CLSID_CSV_PREVIEW}");
+        // Exclusive-tree content (ours plus anything nested under it) must be
+        // replaced by the C1 deletion; shared keys above the trees survive.
         registry
             .0
             .get_mut(&clsid)
             .unwrap()
-            .insert("Foreign".into(), Value::text("keep"));
+            .insert("Foreign".into(), Value::text("gone with the tree"));
         unregister(&mut registry, "module.dll").unwrap();
-        let csv_association = format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
-        assert!(registry.0[&csv_association].is_empty());
+        // Our trees are gone, including the association leaf (07A-08/C1).
+        assert!(!registry.0.contains_key(&csv_association));
+        assert!(!registry.0.contains_key(&clsid));
+        assert!(!registry.0.contains_key(&format!("{clsid}\\InprocServer32")));
+        assert!(!registry.0.contains_key(&format!(
+            "SystemFileAssociations\\.csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}"
+        )));
+        // Shared keys stay, with their foreign content intact.
         assert!(registry.0.contains_key(".csv\\ShellEx"));
         assert_eq!(registry.0[".csv"][""], Value::text("foreign default"));
         assert!(registry
             .0
             .contains_key("SystemFileAssociations\\.csv\\ShellEx\\Foreign"));
-        assert_eq!(registry.0[&association][""], Value::text("foreign handler"));
-        assert!(registry.0[&format!("{clsid}\\InprocServer32")].is_empty());
-        assert_eq!(registry.0[&clsid]["Foreign"], Value::text("keep"));
         assert_eq!(
             registry.0[PREVIEW_HANDLERS_KEY]["Foreign"],
             Value::text("keep")
         );
         assert!(!registry.0[PREVIEW_HANDLERS_KEY].contains_key(CLSID_CSV_PREVIEW));
-        assert!(!registry.0[&clsid].contains_key("AppID"));
-        assert!(!registry.0[&clsid].contains_key(DISABLE_LOWIL_VALUE_NAME));
     }
+
+    /// An uninstall without a prior registration is a no-op, not an error
+    /// (a missing tree is treated as already removed).
+    #[test]
+    fn unregister_without_registration_is_a_no_op() {
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct Fake(BTreeMap<String, BTreeMap<String, Value>>);
+        impl Registry for Fake {
+            type Error = ();
+            fn read(&mut self, _: &str, _: Option<&str>) -> Result<Option<Value>, ()> {
+                Ok(None)
+            }
+            fn delete_value(&mut self, _: &str, _: Option<&str>) -> Result<(), ()> {
+                unreachable!("no owned values can exist without registration")
+            }
+            fn write(&mut self, _: &RegistryValue) -> Result<(), ()> {
+                unreachable!()
+            }
+            fn delete_tree(&mut self, _: &str) -> Result<(), ()> {
+                Ok(())
+            }
+        }
+        unregister(&mut Fake::default(), "module.dll").unwrap();
+    }
+
+    /// 07A-08 acceptance: with this handler registered, uninstall removes
+    /// the `ShellEx\{8895…}` leaf outright, while values outside our trees
+    /// stay untouched.
+    #[test]
+    fn unregister_removes_the_empty_8895_leaf() {
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        struct Fake(BTreeMap<String, BTreeMap<String, Value>>);
+        impl Registry for Fake {
+            type Error = ();
+            fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, ()> {
+                Ok(self
+                    .0
+                    .get(key)
+                    .and_then(|v| v.get(name.unwrap_or("")))
+                    .cloned())
+            }
+            fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), ()> {
+                if let Some(values) = self.0.get_mut(key) {
+                    values.remove(name.unwrap_or(""));
+                }
+                Ok(())
+            }
+            fn write(&mut self, entry: &RegistryValue) -> Result<(), ()> {
+                self.0
+                    .entry(entry.key.clone())
+                    .or_default()
+                    .insert(entry.name.unwrap_or("").into(), entry.value.clone());
+                Ok(())
+            }
+            fn delete_tree(&mut self, key: &str) -> Result<(), ()> {
+                let prefix = format!("{key}\\");
+                self.0.remove(key);
+                let owned: Vec<String> = self
+                    .0
+                    .keys()
+                    .filter(|existing| existing.starts_with(&prefix))
+                    .cloned()
+                    .collect();
+                for existing in owned {
+                    self.0.remove(&existing);
+                }
+                Ok(())
+            }
+        }
+        let mut registry = Fake::default();
+        apply_plan(&mut registry, &register_plan("module.dll")).unwrap();
+        let leaf = format!(".csv\\ShellEx\\{PREVIEW_HANDLER_CATEGORY}");
+        assert!(registry.0.contains_key(&leaf));
+        // A foreign value outside our trees must be untouched by uninstall.
+        registry
+            .0
+            .entry(".csv".to_string())
+            .or_default()
+            .insert("".into(), Value::text("foreign default"));
+        unregister(&mut registry, "module.dll").unwrap();
+        assert!(
+            !registry.0.contains_key(&leaf),
+            "the empty leaf must be gone"
+        );
+        assert_eq!(registry.0[".csv"][""], Value::text("foreign default"));
+    }
+
     #[test]
     fn failed_registration_restores_prior_values() {
         use std::collections::BTreeMap;
@@ -477,6 +602,10 @@ mod tests {
             }
             fn delete_value(&mut self, k: &str, _: Option<&str>) -> Result<(), Self::Error> {
                 self.values.remove(k);
+                Ok(())
+            }
+            fn delete_tree(&mut self, k: &str) -> Result<(), Self::Error> {
+                self.keys.remove(k);
                 Ok(())
             }
         }
@@ -529,8 +658,22 @@ mod tests {
                 );
                 Ok(())
             }
+            fn delete_tree(&mut self, key: &str) -> Result<(), ()> {
+                let prefix_key = key.to_string();
+                let prefix = format!("{key}\\");
+                self.0.retain(|(existing, _), _| {
+                    existing != &prefix_key && !existing.starts_with(&prefix)
+                });
+                Ok(())
+            }
         }
         let mut registry = Fake::default();
+        let handlers = PREVIEW_HANDLERS_KEY.to_string();
+        // A foreign DWORD in a shared key this handler never writes survives;
+        // a foreign value inside the CLSID tree is C1-policy replaced.
+        registry
+            .0
+            .insert(Fake::slot(&handlers, "Foreign"), Value::Dword(u32::MAX));
         apply_plan(&mut registry, &register_plan("module.dll")).unwrap();
         let clsid = format!("CLSID\\{CLSID_CSV_PREVIEW}");
         let slot = Fake::slot(&clsid, DISABLE_LOWIL_VALUE_NAME);
@@ -539,22 +682,14 @@ mod tests {
             Some(&Value::Dword(DISABLE_LOWIL_VALUE)),
             "registration must write the Low-IL opt-out as a DWORD"
         );
-        // A foreign value under the same name is not ours: leave it in place.
-        registry
-            .0
-            .insert(slot.clone(), Value::Dword(DISABLE_LOWIL_VALUE + 1));
         unregister(&mut registry, "module.dll").unwrap();
-        assert_eq!(
-            registry.0.get(&slot),
-            Some(&Value::Dword(DISABLE_LOWIL_VALUE + 1)),
-            "unregistration must not remove a value this handler did not write"
-        );
-        // Our own value is removed.
-        registry
-            .0
-            .insert(slot.clone(), Value::Dword(DISABLE_LOWIL_VALUE));
-        unregister(&mut registry, "module.dll").unwrap();
+        // The whole CLSID tree is gone (C1), so the opt-out value with it.
         assert!(!registry.0.contains_key(&slot));
+        assert_eq!(
+            registry.0.get(&Fake::slot(&handlers, "Foreign")),
+            Some(&Value::Dword(u32::MAX)),
+            "values in shared keys survive unregistration"
+        );
     }
 
     #[test]
@@ -584,6 +719,9 @@ mod tests {
                 Ok(())
             }
             fn write(&mut self, _: &RegistryValue) -> Result<(), ()> {
+                Ok(())
+            }
+            fn delete_tree(&mut self, _: &str) -> Result<(), ()> {
                 Ok(())
             }
         }
@@ -652,6 +790,9 @@ mod tests {
                 unreachable!()
             }
             fn write(&mut self, _: &RegistryValue) -> Result<(), Self::Error> {
+                unreachable!()
+            }
+            fn delete_tree(&mut self, _: &str) -> Result<(), Self::Error> {
                 unreachable!()
             }
         }
