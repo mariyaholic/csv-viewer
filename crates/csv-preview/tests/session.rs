@@ -83,6 +83,64 @@ fn spool_cap_marks_a_scan_incomplete() {
     assert!(full.scanned.source_truncated);
 }
 
+/// 07A-09: a source that fills the spool cap exactly is fully spooled, not
+/// truncated. Complementary to `spool_cap_marks_a_scan_incomplete`, which
+/// covers the over-cap case.
+#[test]
+fn spool_exact_cap_is_not_truncated() {
+    // The 90-byte source fits the spool exactly: head takes 10 of the 90
+    // bytes, the remaining 80 fill the rest of the 90-byte cap.
+    let csv = vec![b'x'; 90];
+    let request = ScanRequest::full();
+    let mut config = config();
+    config.head_bytes = 10;
+    config.max_spool_bytes = 90;
+    let session = PreviewSession::start(Cursor::new(csv), Some(90), &request, config).unwrap();
+    assert!(session.wait_for_spool(Duration::from_secs(2)));
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.phase, SessionPhase::SpoolReady);
+    assert!(
+        !snapshot.spool.truncated,
+        "exact cap is complete, not truncated"
+    );
+    assert_eq!(snapshot.spool.bytes, 90);
+    assert_eq!(snapshot.spool.total_bytes, Some(90));
+    assert!(!snapshot.spool_source.expect("spool").truncated);
+
+    session
+        .start_full_scan(Arc::new(InProcessBackend), request, Duration::from_secs(5))
+        .unwrap();
+    assert!(session.wait_for_scan(Duration::from_secs(5)));
+    let full = session.snapshot().full_report.expect("full report");
+    assert!(
+        full.complete,
+        "an exactly cap-sized source must scan complete"
+    );
+    full.validate_invariants().unwrap();
+}
+
+/// 07A-09: the cap+1 production shape (a source one byte past the cap) must
+/// still be reported as truncated — the extra byte is what the probe reads.
+#[test]
+fn spool_one_byte_past_the_cap_is_truncated() {
+    // One byte past the 90-byte cap, with the +1 byte available for the
+    // truncation probe (the shape copy_owned_source feeds in production).
+    let csv = vec![b'x'; 91];
+    let request = ScanRequest::full();
+    let mut config = config();
+    config.head_bytes = 10;
+    config.max_spool_bytes = 90;
+    let session = PreviewSession::start(Cursor::new(csv), Some(91), &request, config).unwrap();
+    assert!(session.wait_for_spool(Duration::from_secs(2)));
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.phase, SessionPhase::SpoolReady);
+    assert!(
+        snapshot.spool.truncated,
+        "one byte past the cap is truncated"
+    );
+    assert_eq!(snapshot.spool.bytes, 90);
+}
+
 #[test]
 fn cancellation_is_terminal() {
     let request = ScanRequest::full();
