@@ -3,18 +3,21 @@
 Made by Maria. Apache-2.0.
 
 The CSV viewer, parser, bounded preview session, worker, protocol and Windows
-Explorer handler are built. Unregistration removes matching owned values and
-leaves shared registry keys in place; empty keys are expected residue. The
-exclusive CLSID tree could be deleted, but is also retained. Rollback restores
-prior values when its ownership check succeeds and does not delete keys.
+Explorer handler are built. Unregistration deletes the owned trees outright —
+the CLSID tree (with the Low-IL opt-out inside it) plus the `.csv\ShellEx`
+and `SystemFileAssociations\.csv\ShellEx\{8895…}` leaves under HKCU — while
+shared keys always stay. Rollback restores prior values when its ownership
+check succeeds and does not delete keys.
 
 [measured] This branch implements the Opus-review fix plan for this repository
-(14 findings, one commit each), highest severity first. Seven findings are
-done: both highs (07A-01 Low-IL opt-out, 07A-02 stream marshalling) and all
-five mediums (07A-03 console flash, 07A-04 per-field memory bound, 07A-05
-panic containment, 07A-06 thread/class lifetimes, 07A-07 visible registration
-warning plus HKCR preflight with `--register`/`--unregister`/`--force`). The
-lows (07A-08 … 07A-14) are not on this branch yet.
+(14 findings, one commit each, highest severity first): both highs (07A-01
+Low-IL opt-out, 07A-02 stream marshalling), all five mediums (07A-03 console
+flash, 07A-04 per-field memory bound, 07A-05 panic containment, 07A-06
+thread/class lifetimes, 07A-07 visible registration warning plus HKCR
+preflight) and all seven lows (07A-08 uninstall deletion, 07A-09 spool-cap
+boundary, 07A-10 per-monitor-DPI font, 07A-11 VK codes + click-to-focus +
+IObjectWithSite/frame forwarding, 07A-12 honest worker skip + pipeline tests,
+07A-13 strict clippy/cargo-deny/Linux job/release job, 07A-14 C2 Notice rule).
 
 ## Commits (one per finding)
 
@@ -27,6 +30,13 @@ lows (07A-08 … 07A-14) are not on this branch yet.
 | 07A-05 | `7db3927` | contain panics at every COM and Win32 entry point |
 | 07A-06 | `e8e7818` | pin the DLL while its threads run and own the window class |
 | 07A-07 | `cb037bf` | visible registration warning CLI; conflict preflight reads HKCR too |
+| 07A-08 | `4ec6d94` | uninstall deletes the owned CLSID tree and 8895 leaves (C1) |
+| 07A-09 | `083913f` | an exactly cap-sized source spools complete, not truncated |
+| 07A-10 | `746f290` | child panes handle `WM_DPICHANGED_AFTERPARENT` and rescale the font |
+| 07A-11 | `a25aa32`, `ed25177` | hotkey compares VK codes; click focuses the pane; `IObjectWithSite` + frame key forwarding |
+| 07A-12 | `d4684d6` | honest worker skip, tests on the real head/spool pipeline |
+| 07A-13 | `73659bb` | strict clippy with triaged allows; cargo-deny, Linux job, tag release job |
+| 07A-14 | `c86d6ce` | C2 Notice rule in ARCHITECTURE; MinGW runtime notices in THIRD_PARTY |
 
 ## Build and test
 
@@ -36,15 +46,24 @@ tests run for real; `core.autocrlf=true`):
 
 ```text
 cargo fmt --check                                     # exit 0
-cargo clippy --locked --all-targets                   # exit 0; 31 pre-existing warning lines
+cargo clippy --locked --all-targets -- -D warnings     # exit 0 (07A-13 triage)
 cargo build --locked                                  # ok
 cargo build --locked --target x86_64-pc-windows-gnu   # ok
-cargo test --locked                                   # 135 passed, 0 failed
+cargo test --locked                                   # 143 passed, 0 failed, 1 ignored
 ```
 
 Baseline on `main` was 119 passing; 07A-01 added one test (120), 07A-02 two
 (122), 07A-03 one (123), 07A-04 two (125), 07A-05 one (126), 07A-06 three
-(129) and 07A-07 six (135).
+(129), 07A-07 six (135), 07A-08 two (137), 07A-09 two (139), 07A-10 two
+(141), 07A-11 two (143) and 07A-12 two (143 after the retarget). The ignored
+test is the worker integration run, which now reports honestly: `cargo test
+--locked -p csv-preview --test session -- --ignored worker_backend` passes
+with `csv-worker.exe` built (CI builds the workspace before running it).
+
+Before the 07A-13 triage the clippy baseline was 32 warning lines on
+stderr (26 `upper_case_acronyms` in the Windows module + 2 per target
+`large_enum_variant` in the protocol, plus per-target summary lines);
+with the deliberate allows, `-- -D warnings` yields zero.
 
 [measured] Evidence highlights:
 
@@ -70,8 +89,29 @@ Baseline on `main` was 119 passing; 07A-01 added one test (120), 07A-02 two
   passes after for a machine-only, a user-hive and a clean registry; the CLI
   confirmation seam proves stdin-n never executes and stdin-y runs with the
   force flag.
+- `unregister_removes_the_empty_8895_leaf` and `unregister_without_registration_is_a_no_op`
+  fail before the 07A-08 deletion loop (residue assertion panic) and pass
+  after; `SHDeleteKeyW` was probed live on a scratch HKCU key (delete → 0,
+  missing → 2) before use.
+- `spool_exact_cap_is_not_truncated`/`spool_one_byte_past_the_cap_is_truncated`
+  (07A-09) fail before the one-byte probe (exact cap wrongly reported
+  truncated) and pass after, with the probe result restored and ignored used
+  for the fails-before run.
+- `dpichanged_afterparent_rebuilds_the_font` (07A-10) drives the real
+  window proc on a real HWND: before the 0x02E3 arm the font kept the stale
+  16 px metrics; after, metrics match a font built from `GetDpiForWindow`.
+- `click_focuses_the_pane_and_vks_compare_correctly` and
+  `unhandled_keys_forward_to_the_host_frame` (07A-11) fail with the old proc
+  (no focus arm, `b'f'` = VK_NUMPAD6 match, `S_FALSE` without forwarding) and
+  pass after, with real focus checks and a fake `IPreviewHandlerFrame` counting
+  references.
+- `slow_stream_preview_still_returns_a_head` (07A-12) now drives the
+  production `read_head` + `start_with_head` composition and the new counting
+  reader proves the source flows into the spool exactly once; the hidden
+  worker binary run evidences the old skip as `10 passed; 0 ignored` versus
+  the new `1 ignored`.
 
-[measured] Rust sources under `crates` total 11,730 lines across 34 files,
+[measured] Rust sources under `crates` total 11,927 lines across 34 files,
 including tests.
 
 ## Tests that need real Windows
@@ -91,6 +131,16 @@ manual checks now required (see `docs/TESTING.md`) include:
 - Registration/unregistration conflicts, including a seeded machine-wide
   `ShellEx` handler with and without `--force`, and rollback under concurrent
   changes; visual layout, packaging and deployment.
+- (XR-2) Drag Explorer between 100% and 200% monitors while a preview pane is
+  open: the pane font must rescale (07A-10's decisive manual step).
+- (XR-2) Click the pane and press F: the full scan starts (07A-11) and no key
+  traps in the pane; the site/frame path is bound by Explorer's `SetSite`.
+- Uninstall behaviour: after `--unregister` a fresh registration works with
+  no stale leaves shadowing a machine-wide handler (07A-08's real-registry
+  verification, previously item 8 of XR-2).
+- The first CI run of the new workflow on the PR: `cargo deny` step, Linux
+  job and the tag release job are pinned-action config that cannot execute
+  from this box (locally verified: YAML parse, clippy gate, builds).
 
 ## Deviations from the fix-plan specs (also in each commit message)
 
@@ -116,6 +166,42 @@ manual checks now required (see `docs/TESTING.md`) include:
   registration plumbing; preflight read errors keep the old lenient behaviour
   (warn and proceed) instead of refusing. TESTING.md registration bullets were
   synced; the stream bullet is left for 07A-12.
+- **07A-08:** `SHDeleteKeyW` was probed live on a scratch HKCU key while the
+  implementation was being verified; the probe test was removed after the
+  evidence, per the local no-forever-mutations rule. The stale `30`-count
+  clippy "warning baseline" in the medium-batch note was a PowerShell stderr
+  artifact; the true baseline was 26/26/2/2 grouped lines (recorded in
+  `w07b.txt`), which 07A-13 then triaged away.
+- **07A-09:** the spec's acceptance arithmetic counted the spool head and the
+  rest separately; the cap counts the head too, so the exact-cap test uses a
+  source length equal to `max_spool_bytes` (91-byte source for a 90 cap).
+- **07A-10:** the automated test drives a real HWND through `SendMessageW`
+  real message delivery (spec suggested a call-count fake); the decisive
+  manual step (drag between 100%/200% monitors) is recorded above for XR-2.
+- **07A-11:** ships **both** subsets — the VK/click-to-focus subset in
+  `a25aa32` and the `IObjectWithSite`/frame-forwarding subset in `ed25177` —
+  per the Manager ruling taken mid-session (the spec's open question was not
+  in DECISIONS.md); mirrored from parquet-viewer L5.
+- **07A-12:** the extraction the spec wanted already landed with 07A-02's
+  `start_with_head`/`read_head` seam, so the finding collapsed into the
+  retarget + honest skip exactly as the spec anticipated; the worker test is
+  `#[ignore]`d by default and fails loudly when run explicitly without the
+  worker (CI builds the workspace first).
+- **07A-13:** the 26 acronym warnings are triaged with one whole-file
+  `#![allow(clippy::upper_case_acronyms)]` (plus rationale) instead of 26
+  per-item attributes — all 26 declarations mirror Windows SDK names, so one
+  comment covers one rationale; the two `large_enum_variant`s carry per-enum
+  comments as specified. The release job is tag-triggered only per the
+  Manager ruling (no `workflow_dispatch`). The cargo-deny step, Linux job
+  and release job reuse the shipped parquet-viewer pin set; first run
+  happens on the PR.
+- **07A-14:** Path B of C2 landed (template + optional section, NOTICE
+  untouched); the GNU-runtime question resolved to "add notices" after the
+  spec's requested `objdump` check measured a static MinGW-w64 runtime in
+  GNU builds, with the THIRD_PARTY review note recording that shipped
+  releases use the MSVC script (the C2-not-ruled "GNU vs MSVC" open question
+  is answered administratively: releases are MSVC; the GNU path stays a
+  documented build convenience with notices in place).
 
 ## Environment notes
 
@@ -128,10 +214,15 @@ manual checks now required (see `docs/TESTING.md`) include:
 
 ## Open issues (for the Manager)
 
-- Remaining findings are the lows: 07A-08 (uninstall residue, C1 ruling),
-  07A-09 (rides `write_spool`, same function as 07A-02), 07A-10, 07A-11,
-  07A-12 (retargets stale tests, includes the TESTING.md stream bullet),
-  07A-13 (clippy triage then `-D warnings`), 07A-14 (C2 NOTICE rule).
-- All rulings for this repository are recorded in `fix-plan/DECISIONS.md`
-  (C1 uninstall, C2 NOTICE, 07A-01 variant, 07A-02 marshalling, 07A-13 clippy
-  triage); no blocking question remains.
+- All 14 findings are implemented on this branch; nothing is parked except
+  the two variant worktrees noted in DECISIONS.md (`07a-01-alt`,
+  `07a-02-sta`).
+- The PR's first CI run validates the new workflow parts that cannot run
+  locally (cargo-deny step and its licenses-only `deny.toml` against the
+  `bans` default, the Linux job, the tag release job). If the `bans` default
+  rejects the three duplicate lockfile versions (`windows-sys` x3, `rustix`
+  x2, `linux-raw-sys` x2 — all target-gated cargo deps), add an explicit
+  `[bans]` section; the shipped parquet-viewer config passes with the same
+  shape.
+- AGENTS.md rule 7 still says "keep LICENSE and NOTICE unchanged"; per C2
+  that line is estate-owned and the Manager updates it in her own time.
