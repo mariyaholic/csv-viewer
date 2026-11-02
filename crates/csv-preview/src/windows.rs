@@ -10,6 +10,13 @@
 //! The handler is deliberately read-only: it consumes the supplied `IStream`,
 //! displays text, and never writes the source or opens links.
 
+// 07A-13: this FFI layer mirrors the Windows SDK spelling (HWND, HDC,
+// HINSTANCE, LRESULT, ...), so clippy::upper_case_acronyms fires on 26
+// declarations here (DECISIONS.md 07A-13 ruling: triage into deliberate
+// allows, then make clippy strict). Renaming would leave the SDK names the
+// surrounding SDK-calling code and TESTING.md text refer to, so the allow
+// is whole-file and deliberate; it is not a licence for acronyms elsewhere.
+#![allow(clippy::upper_case_acronyms)]
 #![allow(non_snake_case, non_upper_case_globals)]
 
 use std::ffi::c_void;
@@ -25,7 +32,7 @@ use csvview_core::text::render_text;
 use csvview_core::{ScanReport, ScanRequest, Settings};
 
 use crate::registration::{
-    apply_plan, register_plan, unregister, Registry, RegistryValue, CLSID_CSV_PREVIEW,
+    apply_plan, register_plan, unregister, Registry, RegistryValue, Value, CLSID_CSV_PREVIEW,
     PREVIEW_HANDLERS_KEY,
 };
 use crate::{PreviewConfig, PreviewSession, SessionPhase, WorkerBackend};
@@ -58,16 +65,31 @@ const E_FAIL: HRESULT = 0x8000_4005u32 as i32;
 const CLASS_E_NOAGGREGATION: HRESULT = 0x8004_0110u32 as i32;
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = 0x8004_0111u32 as i32;
 const STG_E_ACCESSDENIED: HRESULT = 0x8003_0005u32 as i32;
+const ERROR_FILE_NOT_FOUND: LONG = 2;
 const ERROR_ALREADY_EXISTS: HRESULT = 0x8007_00B7u32 as i32;
 
 const STGM_WRITE_BITS: u32 = 0x0000_0003;
 const STATFLAG_NONAME: u32 = 0x0000_0001;
+const COINIT_MULTITHREADED: u32 = 0x0;
 const WM_SIZE: UINT = 0x0005;
 const WM_DPICHANGED: UINT = 0x02E0;
+// 07A-10: child panes only receive this; WM_DPICHANGED goes to top-level
+// windows and never reaches a WS_CHILD preview pane.
+const WM_DPICHANGED_AFTERPARENT: UINT = 0x02E3;
 const LOGPIXELSY: i32 = 90;
 const WM_PAINT: UINT = 0x000F;
 const WM_ERASEBKGND: UINT = 0x0014;
 const WM_KEYDOWN: UINT = 0x0100;
+// 07A-11: clicking the pane must move keyboard focus into it, or the F
+// hotkey can never fire.
+const WM_MOUSEACTIVATE: UINT = 0x0021;
+const WM_LBUTTONDOWN: UINT = 0x0201;
+const MA_ACTIVATE: i32 = 1;
+// 07A-11: WM_KEYDOWN's wparam is a virtual-key code. The previous
+// comparison used the character literals b'F'/b'f' — and 0x66, the old
+// lowercase branch, is VK_NUMPAD6, so Numpad-6 triggered the scan and
+// comparison-by-literal never meant anything.
+const VK_F: WPARAM = 0x46;
 const WM_DESTROY: UINT = 0x0002;
 const WM_APP_DONE: UINT = 0x8001;
 const WS_CHILD: u32 = 0x4000_0000;
@@ -89,10 +111,12 @@ const FIXED_PITCH: u32 = 1;
 const FF_MODERN: u32 = 48;
 const FW_NORMAL: i32 = 400;
 const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
+const HKEY_CLASSES_ROOT: HKEY = 0x8000_0000usize as HKEY;
 const HKEY_CURRENT_USER: HKEY = 0x8000_0001usize as HKEY;
 const KEY_READ: u32 = 0x0002_0019;
 const KEY_WRITE: u32 = 0x0002_0006;
 const REG_SZ: u32 = 1;
+const REG_DWORD: u32 = 4;
 const REG_OPTION_NON_VOLATILE: u32 = 0;
 const DLL_PROCESS_ATTACH: DWORD = 1;
 
@@ -126,6 +150,7 @@ const fn guid(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> GUID {
 
 const IID_IUNKNOWN: GUID = guid(0x0000_0000, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 const IID_ICLASSFACTORY: GUID = guid(0x0000_0001, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
+const IID_ISTREAM: GUID = guid(0x0000_000C, 0, 0, [0xC0, 0, 0, 0, 0, 0, 0, 0x46]);
 const IID_IINITIALIZEWITHSTREAM: GUID = guid(
     0xB824_B49D,
     0x22AC,
@@ -137,6 +162,18 @@ const IID_IPREVIEWHANDLER: GUID = guid(
     0xB41F,
     0x4C1C,
     [0xA5, 0x62, 0x0D, 0x56, 0x42, 0x50, 0x83, 0x6F],
+);
+const IID_IOBJECTWITHSITE: GUID = guid(
+    0xFC48_01A3,
+    0x2BA9,
+    0x11CF,
+    [0xA2, 0x29, 0x00, 0xAA, 0x00, 0x3D, 0x73, 0x52],
+);
+const IID_IPREVIEWHANDLERFRAME: GUID = guid(
+    0xFEC8_7AAF,
+    0x35F9,
+    0x447A,
+    [0xAD, 0x79, 0x43, 0xA1, 0x03, 0xD4, 0x51, 0x4D],
 );
 
 #[repr(C)]
@@ -186,6 +223,24 @@ struct WNDCLASSW {
     hbrBackground: HBRUSH,
     lpszMenuName: LPCWSTR,
     lpszClassName: LPCWSTR,
+}
+
+#[repr(C)]
+#[cfg(test)]
+#[allow(clippy::upper_case_acronyms)]
+struct WNDCLASSEXW {
+    cbSize: UINT,
+    style: UINT,
+    lpfnWndProc: Option<unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT>,
+    cbClsExtra: i32,
+    cbWndExtra: i32,
+    hInstance: HINSTANCE,
+    hIcon: *mut c_void,
+    hCursor: *mut c_void,
+    hbrBackground: *mut c_void,
+    lpszMenuName: LPCWSTR,
+    lpszClassName: LPCWSTR,
+    hIconSm: *mut c_void,
 }
 
 #[repr(C)]
@@ -273,6 +328,45 @@ struct InitInterface {
     owner: *mut PreviewObject,
 }
 
+/// The IUnknown core slots; identical at the start of every COM vtable, so
+/// generic `QueryInterface`/`Release` dispatch works through any interface.
+#[repr(C)]
+struct IUnknownVtbl {
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    release: unsafe extern "system" fn(*mut c_void) -> ULONG,
+}
+
+#[repr(C)]
+struct IObjectWithSiteVtbl {
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    release: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    set_site: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
+    get_site: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+}
+
+/// The subset of `IPreviewHandlerFrame` the handler calls back into (07A-11).
+#[repr(C)]
+struct IPreviewHandlerFrameVtbl {
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    release: unsafe extern "system" fn(*mut c_void) -> ULONG,
+    get_window_context: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
+    translate_accelerator: unsafe extern "system" fn(*mut c_void, *mut MSG) -> HRESULT,
+}
+
+/// `IObjectWithSite` on the preview object itself, mirroring the inventory
+/// `InitInterface` pattern (07A-11).
+#[repr(C)]
+struct SiteInterface {
+    vtbl: *const IObjectWithSiteVtbl,
+    owner: *mut PreviewObject,
+}
+
 #[repr(C)]
 struct PreviewObject {
     vtbl: *const IPreviewHandlerVtbl,
@@ -286,6 +380,11 @@ struct PreviewObject {
     session: Option<Arc<PreviewSession>>,
     text: Vec<u16>,
     init: InitInterface,
+    /// `IObjectWithSite` on the object itself (07A-11).
+    site: SiteInterface,
+    /// The host's `IPreviewHandlerFrame`, queried out of the site in
+    /// `SetSite`. An owned reference, released when the object is destroyed.
+    frame: *mut c_void,
 }
 
 static PREVIEW_VTBL: IPreviewHandlerVtbl = IPreviewHandlerVtbl {
@@ -308,6 +407,14 @@ static INIT_VTBL: IInitializeWithStreamVtbl = IInitializeWithStreamVtbl {
     initialize: init_initialize,
 };
 
+static SITE_VTBL: IObjectWithSiteVtbl = IObjectWithSiteVtbl {
+    query_interface: site_query_interface,
+    add_ref: site_add_ref,
+    release: site_release,
+    set_site: site_set_site,
+    get_site: site_get_site,
+};
+
 #[repr(C)]
 struct ClassFactory {
     vtbl: *const IClassFactoryVtbl,
@@ -322,6 +429,42 @@ static FACTORY_VTBL: IClassFactoryVtbl = IClassFactoryVtbl {
     lock_server: factory_lock_server,
 };
 
+// ---------------------------------------------------------------------------
+// Panic containment (07A-05)
+// ---------------------------------------------------------------------------
+
+// Since Rust 1.81 an unwind out of an `extern "system"` function aborts the
+// process — and prevhost.exe may be hosting other preview handlers too.
+// Contained here, every Win32 entry point fails the call instead of taking
+// the host down with it.
+
+fn contain_hresult(body: impl FnOnce() -> HRESULT) -> HRESULT {
+    contain_hresult_or(E_FAIL, body)
+}
+
+fn contain_hresult_or(default: HRESULT, body: impl FnOnce() -> HRESULT) -> HRESULT {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or(default)
+}
+
+/// Reference counts fail leak-safe on unwind: a counter stuck high keeps the
+/// DLL resident instead of risking a use-after-free.
+fn contain_ulong(body: impl FnOnce() -> ULONG) -> ULONG {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or(1)
+}
+
+/// A window proc failure falls back to the default procedure, so the host
+/// still processes the message.
+fn contain_lresult(
+    window: HWND,
+    message: UINT,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    body: impl FnOnce() -> LRESULT,
+) -> LRESULT {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
+        .unwrap_or_else(|_| unsafe { DefWindowProcW(window, message, wparam, lparam) })
+}
+
 unsafe fn object_from_this(this: *mut c_void) -> *mut PreviewObject {
     this as *mut PreviewObject
 }
@@ -334,7 +477,16 @@ unsafe fn object_release(object: *mut PreviewObject) -> ULONG {
     let previous = (*object).refcount.fetch_sub(1, Ordering::SeqCst);
     if previous == 1 {
         LIVE_COM_OBJECTS.fetch_sub(1, Ordering::SeqCst);
+        // Release the host frame we hold before the object's state is dropped.
+        let frame = (*object).frame;
+        (*object).frame = ptr::null_mut();
+        release_interface(frame);
         drop(Box::from_raw(object));
+        if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 {
+            // The last object is gone, so its windows are destroyed too;
+            // the class is ours alone and can be removed.
+            unregister_window_class();
+        }
         0
     } else {
         previous - 1
@@ -359,6 +511,10 @@ unsafe fn query_preview_interface(
         object_add_ref(object);
         *ppv = &mut (*object).init as *mut InitInterface as *mut c_void;
         S_OK
+    } else if iid == IID_IOBJECTWITHSITE {
+        object_add_ref(object);
+        *ppv = &mut (*object).site as *mut SiteInterface as *mut c_void;
+        S_OK
     } else {
         E_NOINTERFACE
     }
@@ -369,15 +525,15 @@ unsafe extern "system" fn preview_query_interface(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    query_preview_interface(object_from_this(this), riid, ppv)
+    contain_hresult(|| unsafe { query_preview_interface(object_from_this(this), riid, ppv) })
 }
 
 unsafe extern "system" fn preview_add_ref(this: *mut c_void) -> ULONG {
-    object_add_ref(object_from_this(this))
+    contain_ulong(|| unsafe { object_add_ref(object_from_this(this)) })
 }
 
 unsafe extern "system" fn preview_release(this: *mut c_void) -> ULONG {
-    object_release(object_from_this(this))
+    contain_ulong(|| unsafe { object_release(object_from_this(this)) })
 }
 
 unsafe extern "system" fn init_query_interface(
@@ -385,18 +541,116 @@ unsafe extern "system" fn init_query_interface(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    let interface = &*(this as *const InitInterface);
-    query_preview_interface(interface.owner, riid, ppv)
+    contain_hresult(|| unsafe {
+        let interface = &*(this as *const InitInterface);
+        query_preview_interface(interface.owner, riid, ppv)
+    })
 }
 
 unsafe extern "system" fn init_add_ref(this: *mut c_void) -> ULONG {
-    let interface = &*(this as *const InitInterface);
-    object_add_ref(interface.owner)
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const InitInterface);
+        object_add_ref(interface.owner)
+    })
 }
 
 unsafe extern "system" fn init_release(this: *mut c_void) -> ULONG {
-    let interface = &*(this as *const InitInterface);
-    object_release(interface.owner)
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const InitInterface);
+        object_release(interface.owner)
+    })
+}
+
+/// Call `QueryInterface` through an arbitrary COM interface pointer. The
+/// caller owns the returned reference when the call succeeds.
+unsafe fn query_interface_ptr(
+    interface: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
+    let table = *(interface as *mut *const IUnknownVtbl);
+    ((*table).query_interface)(interface, riid, ppv)
+}
+
+/// Call `Release` through an arbitrary COM interface pointer.
+unsafe fn release_interface(interface: *mut c_void) {
+    if interface.is_null() {
+        return;
+    }
+    let table = *(interface as *mut *const IUnknownVtbl);
+    ((*table).release)(interface);
+}
+
+unsafe extern "system" fn site_query_interface(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
+    contain_hresult(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        query_preview_interface(interface.owner, riid, ppv)
+    })
+}
+
+unsafe extern "system" fn site_add_ref(this: *mut c_void) -> ULONG {
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        object_add_ref(interface.owner)
+    })
+}
+
+unsafe extern "system" fn site_release(this: *mut c_void) -> ULONG {
+    contain_ulong(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        object_release(interface.owner)
+    })
+}
+
+/// `IObjectWithSite::SetSite` — store the host site and query it for the
+/// `IPreviewHandlerFrame` the accelerator forwarder calls back into
+/// (07A-11, mirroring parquet-viewer L5).
+unsafe extern "system" fn site_set_site(this: *mut c_void, site: *mut c_void) -> HRESULT {
+    contain_hresult(|| unsafe {
+        let interface = &*(this as *const SiteInterface);
+        let object = interface.owner;
+        // Replace any previous site's frame reference.
+        release_interface((*object).frame);
+        (*object).frame = ptr::null_mut();
+        if site.is_null() {
+            // Explorer passes NULL to tear the site down.
+            return S_OK;
+        }
+        let mut frame: *mut c_void = ptr::null_mut();
+        let hr = query_interface_ptr(site, &IID_IPREVIEWHANDLERFRAME, &mut frame);
+        if hr == S_OK && !frame.is_null() {
+            (*object).frame = frame;
+        }
+        // Accept the site even when it exposes no frame: the host may hand
+        // over an object that implements other interfaces too.
+        S_OK
+    })
+}
+
+/// `IObjectWithSite::GetSite`.
+unsafe extern "system" fn site_get_site(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
+    contain_hresult(|| unsafe {
+        if riid.is_null() || ppv.is_null() {
+            return E_POINTER;
+        }
+        *ppv = ptr::null_mut();
+        let interface = &*(this as *const SiteInterface);
+        let frame = (*interface.owner).frame;
+        if frame.is_null() {
+            // No site: `IObjectWithSite` fails this call.
+            return E_FAIL;
+        }
+        // Query outside of any lock: the frame may re-enter this handler.
+        query_interface_ptr(frame, riid, ppv)
+    })
 }
 
 unsafe fn stream_add_ref(stream: *mut c_void) {
@@ -462,6 +716,134 @@ impl Drop for StreamReader {
     }
 }
 
+/// A raw pointer that is explicitly moved between threads. Only used for a
+/// stream produced by `CoMarshalInterThreadInterfaceInStream`, which is
+/// designed to be read on another apartment.
+struct SendPtr(*mut c_void);
+
+unsafe impl Send for SendPtr {}
+
+/// Marshal the host stream so the session's spool thread can read it without
+/// the host apartment ever copying the whole file. Must be called on the
+/// apartment that owns `stream`; the result is consumed by
+/// [`unmarshal_stream`].
+unsafe fn marshal_stream(stream: *mut c_void) -> Result<*mut c_void, String> {
+    let mut marshalled: *mut c_void = ptr::null_mut();
+    let result = CoMarshalInterThreadInterfaceInStream(&IID_ISTREAM, stream, &mut marshalled);
+    if result < 0 || marshalled.is_null() {
+        return Err(format!(
+            "CoMarshalInterThreadInterfaceInStream failed: 0x{result:08X}"
+        ));
+    }
+    Ok(marshalled)
+}
+
+/// A stream unmarshalled onto the calling thread. Dropping it releases the
+/// stream and tears down the apartment this call initialized.
+struct UnmarshalledStream {
+    stream: *mut c_void,
+}
+
+// The pointer is only ever created and used on the thread that unmarshalled it
+// (`MarshalledReader::read` unmarshals lazily on the spool thread; the reader is
+// built with `stream: None` on the host apartment, so no live stream crosses a
+// thread boundary).
+unsafe impl Send for UnmarshalledStream {}
+
+unsafe fn unmarshal_stream(marshalled: *mut c_void) -> io::Result<UnmarshalledStream> {
+    let result = CoInitializeEx(ptr::null_mut(), COINIT_MULTITHREADED);
+    if result < 0 {
+        // The marshalled stream was never consumed; release it ourselves.
+        stream_release(marshalled);
+        return Err(io::Error::other(format!(
+            "CoInitializeEx failed: 0x{result:08X}"
+        )));
+    }
+    let mut stream: *mut c_void = ptr::null_mut();
+    let result = CoGetInterfaceAndReleaseStream(marshalled, &IID_ISTREAM, &mut stream);
+    if result < 0 {
+        // CoGetInterfaceAndReleaseStream released the marshalled stream.
+        CoUninitialize();
+        return Err(io::Error::other(format!(
+            "CoGetInterfaceAndReleaseStream failed: 0x{result:08X}"
+        )));
+    }
+    Ok(UnmarshalledStream { stream })
+}
+
+impl Read for UnmarshalledStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut read = 0u32;
+        let vtbl = unsafe { *(self.stream as *mut *const IStreamVtbl) };
+        let result = unsafe {
+            ((*vtbl).read)(
+                self.stream,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer.len().min(u32::MAX as usize) as u32,
+                &mut read,
+            )
+        };
+        if result < 0 {
+            Err(io::Error::other(format!(
+                "IStream::Read failed: 0x{result:08X}"
+            )))
+        } else {
+            Ok(read as usize)
+        }
+    }
+}
+
+impl Drop for UnmarshalledStream {
+    fn drop(&mut self) {
+        unsafe {
+            stream_release(self.stream);
+            CoUninitialize();
+        }
+    }
+}
+
+/// A host `IStream` marshalled for the session's spool thread. The stream is
+/// unmarshalled lazily on the first `read`, which is the thread that will read
+/// it, and released when this reader is dropped.
+struct MarshalledReader {
+    marshalled: SendPtr,
+    stream: Option<UnmarshalledStream>,
+}
+
+impl MarshalledReader {
+    unsafe fn new(marshalled: *mut c_void) -> Self {
+        Self {
+            marshalled: SendPtr(marshalled),
+            stream: None,
+        }
+    }
+}
+
+impl Read for MarshalledReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.stream.is_none() {
+            self.stream = Some(unsafe { unmarshal_stream(self.marshalled.0) }?);
+        }
+        self.stream
+            .as_mut()
+            .expect("unmarshalled above")
+            .read(buffer)
+    }
+}
+
+impl Drop for MarshalledReader {
+    fn drop(&mut self) {
+        if self.stream.is_none() {
+            // Never unmarshalled (for example the session was cancelled before
+            // the first read); release the marshalled stream directly.
+            unsafe { stream_release(self.marshalled.0) };
+        }
+    }
+}
+
 unsafe fn stream_size_hint(stream: *mut c_void) -> Option<u64> {
     if stream.is_null() {
         return None;
@@ -481,79 +863,106 @@ unsafe extern "system" fn init_initialize(
     stream: *mut c_void,
     mode: u32,
 ) -> HRESULT {
-    if stream.is_null() {
-        return E_POINTER;
-    }
-    if mode & STGM_WRITE_BITS != 0 {
-        return STG_E_ACCESSDENIED;
-    }
-    let interface = &*(this as *const InitInterface);
-    let object = &mut *interface.owner;
-    if !object.stream.is_null() {
-        stream_release(object.stream);
-    }
-    stream_add_ref(stream);
-    object.stream = stream;
-    S_OK
+    contain_hresult(|| unsafe {
+        if stream.is_null() {
+            return E_POINTER;
+        }
+        if mode & STGM_WRITE_BITS != 0 {
+            return STG_E_ACCESSDENIED;
+        }
+        let interface = &*(this as *const InitInterface);
+        let object = &mut *interface.owner;
+        if !object.stream.is_null() {
+            stream_release(object.stream);
+        }
+        stream_add_ref(stream);
+        object.stream = stream;
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_set_window(this: *mut c_void, parent: HWND) -> HRESULT {
-    let object = &mut *object_from_this(this);
-    object.parent = parent;
-    if !object.window.is_null() && !parent.is_null() {
-        SetParent(object.window, parent);
-    }
-    S_OK
+    contain_hresult(|| unsafe {
+        let object = &mut *object_from_this(this);
+        object.parent = parent;
+        if !object.window.is_null() && !parent.is_null() {
+            SetParent(object.window, parent);
+        }
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_set_rect(this: *mut c_void, rect: *const RECT) -> HRESULT {
-    if rect.is_null() {
-        return E_POINTER;
-    }
-    let object = &mut *object_from_this(this);
-    object.rect = *rect;
-    if !object.window.is_null() {
-        let width = (object.rect.right - object.rect.left).max(1);
-        let height = (object.rect.bottom - object.rect.top).max(1);
-        MoveWindow(
-            object.window,
-            object.rect.left,
-            object.rect.top,
-            width,
-            height,
-            1,
-        );
-    }
-    S_OK
+    contain_hresult(|| unsafe {
+        if rect.is_null() {
+            return E_POINTER;
+        }
+        let object = &mut *object_from_this(this);
+        object.rect = *rect;
+        if !object.window.is_null() {
+            let width = (object.rect.right - object.rect.left).max(1);
+            let height = (object.rect.bottom - object.rect.top).max(1);
+            MoveWindow(
+                object.window,
+                object.rect.left,
+                object.rect.top,
+                width,
+                height,
+                1,
+            );
+        }
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_set_focus(this: *mut c_void) -> HRESULT {
-    let object = &*object_from_this(this);
-    if !object.window.is_null() {
-        SetFocus(object.window);
-    }
-    S_OK
+    contain_hresult(|| unsafe {
+        let object = &*object_from_this(this);
+        if !object.window.is_null() {
+            SetFocus(object.window);
+        }
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_query_focus(_this: *mut c_void, focus: *mut HWND) -> HRESULT {
-    if focus.is_null() {
-        return E_POINTER;
-    }
-    *focus = GetFocus();
-    S_OK
+    contain_hresult(|| unsafe {
+        if focus.is_null() {
+            return E_POINTER;
+        }
+        *focus = GetFocus();
+        S_OK
+    })
 }
 
 unsafe extern "system" fn preview_translate_accelerator(
-    _this: *mut c_void,
-    _message: *mut MSG,
+    this: *mut c_void,
+    message: *mut MSG,
 ) -> HRESULT {
-    S_FALSE
+    contain_hresult(|| unsafe {
+        if message.is_null() {
+            return E_POINTER;
+        }
+        // The pane consumes nothing through this entry point: its local
+        // hotkey arrives as a directly focused WM_KEYDOWN (07A-11 subset 1).
+        // Anything the host offers here belongs to the host frame, so an
+        // unhandled key is forwarded; fail closed (S_FALSE) without a site,
+        // so the shell keeps the key.
+        let frame = (*object_from_this(this)).frame;
+        if frame.is_null() {
+            return S_FALSE;
+        }
+        let table = *(frame as *mut *const IPreviewHandlerFrameVtbl);
+        ((*table).translate_accelerator)(frame, message)
+    })
 }
 
 unsafe extern "system" fn preview_unload(this: *mut c_void) -> HRESULT {
-    let object = &mut *object_from_this(this);
-    object.cleanup();
-    S_OK
+    contain_hresult(|| unsafe {
+        let object = &mut *object_from_this(this);
+        object.cleanup();
+        S_OK
+    })
 }
 
 impl PreviewObject {
@@ -590,20 +999,8 @@ impl Drop for PreviewObject {
 unsafe fn ensure_window_class() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
-        let class_name = CLASS_NAME.get_or_init(|| wide("CsvViewerPreview"));
-        let window_class = WNDCLASSW {
-            style: 0,
-            lpfnWndProc: Some(preview_window_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: GetModuleHandleW(ptr::null()),
-            hIcon: ptr::null_mut(),
-            hCursor: ptr::null_mut(),
-            hbrBackground: ptr::null_mut(),
-            lpszMenuName: ptr::null(),
-            lpszClassName: class_name.as_ptr(),
-        };
-        let atom = RegisterClassW(&window_class);
+        let class_name = CLASS_NAME.get_or_init(|| wide(WINDOW_CLASS_NAME));
+        let atom = register_window_class(this_module(), class_name);
         if atom == 0 {
             let error = GetLastError();
             if error != ERROR_CLASS_ALREADY_EXISTS {
@@ -615,71 +1012,138 @@ unsafe fn ensure_window_class() {
     });
 }
 
+/// `class_name` must outlive the registration: Windows keeps the pointer.
+/// The class belongs to the DLL's module, not to the host EXE, so a DLL
+/// reload re-registers cleanly instead of reusing a stale class.
+unsafe fn register_window_class(module: HINSTANCE, class_name: &[u16]) -> u16 {
+    let window_class = WNDCLASSW {
+        style: 0,
+        lpfnWndProc: Some(preview_window_proc),
+        cbClsExtra: 0,
+        cbWndExtra: 0,
+        hInstance: module,
+        hIcon: ptr::null_mut(),
+        hCursor: ptr::null_mut(),
+        hbrBackground: ptr::null_mut(),
+        lpszMenuName: ptr::null(),
+        lpszClassName: class_name.as_ptr(),
+    };
+    RegisterClassW(&window_class)
+}
+
+/// Remove the class once no object of the library is left (07A-06). A
+/// failure is tolerated: Windows refuses to delete a class whose windows are
+/// still alive, and such residue is harmless.
+unsafe fn unregister_window_class() {
+    let Some(class_name) = CLASS_NAME.get() else {
+        return;
+    };
+    UnregisterClassW(class_name.as_ptr(), this_module());
+}
+
+/// Hand the rest of the host stream to a session without copying it twice.
+///
+/// A standard shell stream is marshalled so the session's spool thread reads it
+/// directly: one copy, off the host apartment. A stream that cannot be
+/// marshalled is read here within the spool cap as a fallback, keeping the
+/// previous behaviour for that rare case only.
+fn start_spooled_session(
+    reader: &mut StreamReader,
+    head: Vec<u8>,
+    total_bytes: Option<u64>,
+    request: &ScanRequest,
+    config: PreviewConfig,
+) -> Result<PreviewSession, crate::session::PreviewError> {
+    match unsafe { marshal_stream(reader.stream) } {
+        Ok(marshalled) => PreviewSession::start_with_head(
+            head,
+            unsafe { MarshalledReader::new(marshalled) },
+            total_bytes,
+            request,
+            config,
+        ),
+        Err(_) => {
+            let rest = crate::session::copy_owned_source(reader, config.max_spool_bytes)
+                .map_err(|error| crate::session::PreviewError::Io(error.to_string()))?;
+            PreviewSession::start_with_head(head, rest, total_bytes, request, config)
+        }
+    }
+}
+
 unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
-    let object = &mut *object_from_this(this);
-    if object.stream.is_null() || object.parent.is_null() {
-        return E_UNEXPECTED;
-    }
-    if let Some(session) = object.session.take() {
-        session.cancel();
-    }
-    if !object.window.is_null() {
-        DestroyWindow(object.window);
-        object.window = ptr::null_mut();
-    }
+    contain_hresult(|| unsafe {
+        let object = &mut *object_from_this(this);
+        if object.stream.is_null() || object.parent.is_null() {
+            return E_UNEXPECTED;
+        }
+        if let Some(session) = object.session.take() {
+            session.cancel();
+        }
+        if !object.window.is_null() {
+            DestroyWindow(object.window);
+            object.window = ptr::null_mut();
+        }
 
-    let mut request = ScanRequest::preview();
-    let (settings, _) = Settings::load(None);
-    settings.apply_to(&mut request);
-    let reader = StreamReader::new(object.stream);
-    let length_hint = stream_size_hint(object.stream);
-    let config = PreviewConfig::default();
-    let source = match crate::session::copy_owned_source(reader, config.max_spool_bytes) {
-        Ok(source) => source,
-        Err(error) => {
-            object.set_error_text(&format!("CSV preview could not read stream: {error}"));
+        let mut request = ScanRequest::preview();
+        let (settings, _) = Settings::load(None);
+        settings.apply_to(&mut request);
+        let reader = StreamReader::new(object.stream);
+        let length_hint = stream_size_hint(object.stream);
+        let config = PreviewConfig::default();
+
+        // Read only the bounded head here, on the host's own apartment, so the
+        // first screen appears promptly. The rest of the stream is read on the
+        // session's spool thread (marshalled across apartments), so this thread
+        // is never blocked for a whole-file copy.
+        let mut reader = reader;
+        let head = match crate::session::read_head(&mut reader, config.head_bytes) {
+            Ok(head) => head,
+            Err(error) => {
+                object.set_error_text(&format!("CSV preview could not read stream: {error}"));
+                return E_FAIL;
+            }
+        };
+        let session = match start_spooled_session(&mut reader, head, length_hint, &request, config)
+        {
+            Ok(session) => Arc::new(session),
+            Err(error) => {
+                object.set_error_text(&format!("CSV preview could not start: {error}"));
+                return E_FAIL;
+            }
+        };
+        object.session = Some(session);
+        object.refresh_text();
+
+        ensure_window_class();
+        let width = (object.rect.right - object.rect.left).max(320);
+        let height = (object.rect.bottom - object.rect.top).max(200);
+        let class_name = wide(WINDOW_CLASS_NAME);
+        let title = wide("CSV viewer and preview");
+        let window = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            title.as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            object.rect.left,
+            object.rect.top,
+            width,
+            height,
+            object.parent,
+            ptr::null_mut(),
+            this_module(),
+            object as *mut PreviewObject as *mut c_void,
+        );
+        if window.is_null() {
+            object.set_error_text("CSV preview could not create its child window.");
             return E_FAIL;
         }
-    };
-    let session = match PreviewSession::start(source, length_hint, &request, config) {
-        Ok(session) => Arc::new(session),
-        Err(error) => {
-            object.set_error_text(&format!("CSV preview could not start: {error}"));
-            return E_FAIL;
-        }
-    };
-    object.session = Some(session);
-    object.refresh_text();
-
-    ensure_window_class();
-    let width = (object.rect.right - object.rect.left).max(320);
-    let height = (object.rect.bottom - object.rect.top).max(200);
-    let class_name = wide("CsvViewerPreview");
-    let title = wide("CSV viewer and preview");
-    let window = CreateWindowExW(
-        0,
-        class_name.as_ptr(),
-        title.as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-        object.rect.left,
-        object.rect.top,
-        width,
-        height,
-        object.parent,
-        ptr::null_mut(),
-        GetModuleHandleW(ptr::null()),
-        object as *mut PreviewObject as *mut c_void,
-    );
-    if window.is_null() {
-        object.set_error_text("CSV preview could not create its child window.");
-        return E_FAIL;
-    }
-    object.window = window;
-    SetWindowLongPtrW(window, GWLP_USERDATA, object as *mut PreviewObject as isize);
-    object.refresh_text();
-    ShowWindow(window, SW_SHOW);
-    UpdateWindow(window);
-    S_OK
+        object.window = window;
+        SetWindowLongPtrW(window, GWLP_USERDATA, object as *mut PreviewObject as isize);
+        object.refresh_text();
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+        S_OK
+    })
 }
 
 impl PreviewObject {
@@ -780,14 +1244,80 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
     }
     let waiting = session.clone();
     let window_value = window as usize;
-    thread::spawn(move || {
-        let _ = waiting.wait_for_scan(timeout + Duration::from_secs(1));
-        PostMessageW(window_value as HWND, WM_APP_DONE, 0, 0);
-    });
+    if thread::Builder::new()
+        .name("csv-preview-scan-waiter".to_string())
+        .spawn(move || {
+            let _alive = crate::lifecycle::LiveThread::enter();
+            let _ = waiting.wait_for_scan(timeout + Duration::from_secs(1));
+            PostMessageW(window_value as HWND, WM_APP_DONE, 0, 0);
+        })
+        .is_err()
+    {
+        // The scan itself keeps running inside the session; only the
+        // completion ping would be missing, so the pane keeps the bounded
+        // preview instead of aborting the host.
+        object.set_error_text("Full scan is running but its completion notice could not start.");
+    }
     object.refresh_text();
 }
 
 static CLASS_NAME: OnceLock<Vec<u16>> = OnceLock::new();
+
+const WINDOW_CLASS_NAME: &str = "CsvViewerPreview";
+
+/// Font em height for a DPI (07A-10). Mirrors the legacy LOGPIXELSY formula
+/// so the lazy WM_PAINT builder and the DPI rebuild agree: a 14 px em at the
+/// 96-dpi reference scale, clamped to at least one pixel.
+fn font_em_height(dpi: i32) -> i32 {
+    -(14 * dpi.max(1) / 96).max(1)
+}
+
+/// The window's effective DPI (07A-10). `GetDpiForWindow` is per-monitor
+/// aware and also valid for child windows; the legacy device-context metric
+/// is the fallback for a window that cannot report one. Both null inputs
+/// yield 0 (unknown).
+unsafe fn window_dpi(window: HWND, device: HDC) -> i32 {
+    let dpi = GetDpiForWindow(window) as i32;
+    if dpi > 0 {
+        dpi
+    } else if !device.is_null() {
+        GetDeviceCaps(device, LOGPIXELSY)
+    } else {
+        0
+    }
+}
+
+/// Rebuilds the cached preview font for the window's current DPI (07A-10),
+/// so a pane carried to a different monitor rescales. A null window keeps
+/// the lazy path: WM_PAINT then rebuilds the font from the paint device.
+fn rebuild_font_for_dpi(window: HWND, font: HFONT) -> HFONT {
+    unsafe {
+        if !font.is_null() {
+            DeleteObject(font);
+        }
+        // Without a window DPI, WM_PAINT rebuilds lazily from the device.
+        let dpi = window_dpi(window, ptr::null_mut());
+        if dpi == 0 {
+            return ptr::null_mut();
+        }
+        CreateFontW(
+            font_em_height(dpi),
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            FIXED_PITCH | FF_MODERN,
+            wide("Consolas").as_ptr(),
+        )
+    }
+}
 
 unsafe extern "system" fn preview_window_proc(
     window: HWND,
@@ -795,39 +1325,56 @@ unsafe extern "system" fn preview_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let object = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut PreviewObject;
-    match message {
-        WM_SIZE | WM_DPICHANGED => {
-            if !object.is_null() {
-                if message == WM_DPICHANGED && !(*object).font.is_null() {
-                    DeleteObject((*object).font);
-                    (*object).font = ptr::null_mut();
+    contain_lresult(window, message, wparam, lparam, || unsafe {
+        let object = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut PreviewObject;
+        match message {
+            WM_SIZE | WM_DPICHANGED | WM_DPICHANGED_AFTERPARENT => {
+                if !object.is_null() {
+                    if message != WM_SIZE && !(*object).font.is_null() {
+                        // 07A-10: a DPI change (children only ever see the
+                        // AFTERPARENT form) rescales the font at the window's
+                        // current DPI instead of merely dropping it.
+                        (*object).font = rebuild_font_for_dpi(window, (*object).font);
+                    }
+                    (*object).refresh_text();
                 }
-                (*object).refresh_text();
+                DefWindowProcW(window, message, wparam, lparam)
             }
-            DefWindowProcW(window, message, wparam, lparam)
-        }
-        WM_PAINT => {
-            paint_window(window, object);
-            0
-        }
-        WM_ERASEBKGND => 1,
-        WM_KEYDOWN if wparam == b'F' as usize || wparam == b'f' as usize => {
-            if !object.is_null() {
-                start_full_scan(&mut *object, window);
+            WM_PAINT => {
+                paint_window(window, object);
+                0
             }
-            0
-        }
-        WM_APP_DONE => {
-            if !object.is_null() {
-                (*object).refresh_text();
-                InvalidateRect(window, ptr::null(), 1);
+            WM_ERASEBKGND => 1,
+            WM_KEYDOWN if wparam == VK_F => {
+                if !object.is_null() {
+                    start_full_scan(&mut *object, window);
+                }
+                0
             }
-            0
+            WM_MOUSEACTIVATE => {
+                // 07A-11: a click on the pane moves keyboard focus into it.
+                if !object.is_null() {
+                    SetFocus(window);
+                }
+                MA_ACTIVATE as LRESULT
+            }
+            WM_LBUTTONDOWN => {
+                if !object.is_null() {
+                    SetFocus(window);
+                }
+                0
+            }
+            WM_APP_DONE => {
+                if !object.is_null() {
+                    (*object).refresh_text();
+                    InvalidateRect(window, ptr::null(), 1);
+                }
+                0
+            }
+            WM_DESTROY => 0,
+            _ => DefWindowProcW(window, message, wparam, lparam),
         }
-        WM_DESTROY => 0,
-        _ => DefWindowProcW(window, message, wparam, lparam),
-    }
+    })
 }
 
 unsafe fn paint_window(window: HWND, object: *mut PreviewObject) {
@@ -842,7 +1389,7 @@ unsafe fn paint_window(window: HWND, object: *mut PreviewObject) {
         let object = &mut *object;
         if object.font.is_null() {
             object.font = CreateFontW(
-                -(14 * GetDeviceCaps(device, LOGPIXELSY).max(1) / 96).max(1),
+                font_em_height(window_dpi(window, device)),
                 0,
                 0,
                 0,
@@ -930,48 +1477,59 @@ pub unsafe extern "system" fn DllGetClassObject(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    if clsid.is_null() || riid.is_null() || ppv.is_null() {
-        return E_POINTER;
-    }
-    *ppv = ptr::null_mut();
-    let expected = parse_guid(CLSID_CSV_PREVIEW);
-    if expected.map(|value| value != *clsid).unwrap_or(true) {
-        return CLASS_E_CLASSNOTAVAILABLE;
-    }
-    let factory = Box::into_raw(Box::new(ClassFactory {
-        vtbl: &FACTORY_VTBL,
-        refcount: AtomicU32::new(1),
-    }));
-    LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
-    let result = query_factory(factory, riid, ppv);
-    release_factory(factory);
-    result
+    contain_hresult(|| unsafe {
+        if clsid.is_null() || riid.is_null() || ppv.is_null() {
+            return E_POINTER;
+        }
+        *ppv = ptr::null_mut();
+        let expected = parse_guid(CLSID_CSV_PREVIEW);
+        if expected.map(|value| value != *clsid).unwrap_or(true) {
+            return CLASS_E_CLASSNOTAVAILABLE;
+        }
+        let factory = Box::into_raw(Box::new(ClassFactory {
+            vtbl: &FACTORY_VTBL,
+            refcount: AtomicU32::new(1),
+        }));
+        LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
+        let result = query_factory(factory, riid, ppv);
+        release_factory(factory);
+        result
+    })
 }
 
 #[no_mangle]
 /// # Safety
 /// Must be called according to the COM DLL lifetime contract.
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 && SERVER_LOCKS.load(Ordering::SeqCst) == 0 {
-        S_OK
-    } else {
-        S_FALSE
-    }
+    // A panic here means the counters cannot be trusted: keep the DLL
+    // resident (S_FALSE) instead of allowing an unload. A library thread
+    // still running is also a refusal: unloading would leave it executing
+    // unmapped code.
+    contain_hresult_or(S_FALSE, || {
+        if crate::lifecycle::live_threads() != 0
+            || LIVE_COM_OBJECTS.load(Ordering::SeqCst) != 0
+            || SERVER_LOCKS.load(Ordering::SeqCst) != 0
+        {
+            S_FALSE
+        } else {
+            S_OK
+        }
+    })
 }
 
 #[no_mangle]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
-    unsafe {
+    contain_hresult(|| unsafe {
         let Some(path) = module_path() else {
             return E_FAIL;
         };
         register_module(&path.to_string_lossy(), false)
-    }
+    })
 }
 
 #[no_mangle]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
-    unregister_module()
+    contain_hresult(unregister_module)
 }
 
 unsafe fn query_factory(
@@ -998,12 +1556,14 @@ unsafe extern "system" fn factory_query_interface(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    query_factory(this as *mut ClassFactory, riid, ppv)
+    contain_hresult(|| unsafe { query_factory(this as *mut ClassFactory, riid, ppv) })
 }
 
 unsafe extern "system" fn factory_add_ref(this: *mut c_void) -> ULONG {
-    let factory = &*(this as *const ClassFactory);
-    factory.refcount.fetch_add(1, Ordering::SeqCst) + 1
+    contain_ulong(|| unsafe {
+        let factory = &*(this as *const ClassFactory);
+        factory.refcount.fetch_add(1, Ordering::SeqCst) + 1
+    })
 }
 
 unsafe fn release_factory(factory: *mut ClassFactory) -> ULONG {
@@ -1011,6 +1571,9 @@ unsafe fn release_factory(factory: *mut ClassFactory) -> ULONG {
     if previous == 1 {
         LIVE_COM_OBJECTS.fetch_sub(1, Ordering::SeqCst);
         drop(Box::from_raw(factory));
+        if LIVE_COM_OBJECTS.load(Ordering::SeqCst) == 0 {
+            unregister_window_class();
+        }
         0
     } else {
         previous - 1
@@ -1018,7 +1581,7 @@ unsafe fn release_factory(factory: *mut ClassFactory) -> ULONG {
 }
 
 unsafe extern "system" fn factory_release(this: *mut c_void) -> ULONG {
-    release_factory(this as *mut ClassFactory)
+    contain_ulong(|| unsafe { release_factory(this as *mut ClassFactory) })
 }
 
 unsafe extern "system" fn factory_create_instance(
@@ -1027,50 +1590,60 @@ unsafe extern "system" fn factory_create_instance(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    let _factory = &*(this as *const ClassFactory);
-    if !outer.is_null() {
-        return CLASS_E_NOAGGREGATION;
-    }
-    if riid.is_null() || ppv.is_null() {
-        return E_POINTER;
-    }
-    *ppv = ptr::null_mut();
-    let mut object = Box::new(PreviewObject {
-        vtbl: &PREVIEW_VTBL,
-        refcount: AtomicU32::new(1),
-        stream: ptr::null_mut(),
-        parent: ptr::null_mut(),
-        rect: RECT {
-            left: 0,
-            top: 0,
-            right: 640,
-            bottom: 480,
-        },
-        window: ptr::null_mut(),
-        font: ptr::null_mut(),
-        brush: ptr::null_mut(),
-        session: None,
-        text: Vec::new(),
-        init: InitInterface {
-            vtbl: &INIT_VTBL,
-            owner: ptr::null_mut(),
-        },
-    });
-    object.init.owner = &mut *object as *mut PreviewObject;
-    LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
-    let raw = Box::into_raw(object);
-    let result = query_preview_interface(raw, riid, ppv);
-    object_release(raw);
-    result
+    contain_hresult(|| unsafe {
+        let _factory = &*(this as *const ClassFactory);
+        if !outer.is_null() {
+            return CLASS_E_NOAGGREGATION;
+        }
+        if riid.is_null() || ppv.is_null() {
+            return E_POINTER;
+        }
+        *ppv = ptr::null_mut();
+        let mut object = Box::new(PreviewObject {
+            vtbl: &PREVIEW_VTBL,
+            refcount: AtomicU32::new(1),
+            stream: ptr::null_mut(),
+            parent: ptr::null_mut(),
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 640,
+                bottom: 480,
+            },
+            window: ptr::null_mut(),
+            font: ptr::null_mut(),
+            brush: ptr::null_mut(),
+            session: None,
+            text: Vec::new(),
+            init: InitInterface {
+                vtbl: &INIT_VTBL,
+                owner: ptr::null_mut(),
+            },
+            site: SiteInterface {
+                vtbl: &SITE_VTBL,
+                owner: ptr::null_mut(),
+            },
+            frame: ptr::null_mut(),
+        });
+        object.init.owner = &mut *object as *mut PreviewObject;
+        object.site.owner = &mut *object as *mut PreviewObject;
+        LIVE_COM_OBJECTS.fetch_add(1, Ordering::SeqCst);
+        let raw = Box::into_raw(object);
+        let result = query_preview_interface(raw, riid, ppv);
+        object_release(raw);
+        result
+    })
 }
 
 unsafe extern "system" fn factory_lock_server(_this: *mut c_void, lock: BOOL) -> HRESULT {
-    if lock != 0 {
-        SERVER_LOCKS.fetch_add(1, Ordering::SeqCst);
-    } else {
-        SERVER_LOCKS.fetch_sub(1, Ordering::SeqCst);
-    }
-    S_OK
+    contain_hresult(|| {
+        if lock != 0 {
+            SERVER_LOCKS.fetch_add(1, Ordering::SeqCst);
+        } else {
+            SERVER_LOCKS.fetch_sub(1, Ordering::SeqCst);
+        }
+        S_OK
+    })
 }
 
 fn parse_guid(text: &str) -> Option<GUID> {
@@ -1121,30 +1694,37 @@ fn wide_text(value: &str) -> Vec<u16> {
 // ---------------------------------------------------------------------------
 
 fn register_module(module: &str, force: bool) -> HRESULT {
-    unsafe {
-        let plan = register_plan(module);
-        for entry in &plan {
-            if entry.is_association() && !force {
-                if let Some(existing) = read_default(&entry.key) {
-                    if !existing.is_empty() && !existing.eq_ignore_ascii_case(CLSID_CSV_PREVIEW) {
-                        eprintln!(
-                            "csv-preview: refusing to replace preview handler {existing:?} for {}; \
-                             ask the user before changing it",
-                            entry.key
-                        );
-                        return ERROR_ALREADY_EXISTS;
-                    }
-                }
+    // Preflight over the user hive AND the merged classes root: a
+    // machine-wide handler (HKLM, e.g. an office suite) is otherwise
+    // silently shadowed by our per-user key.
+    match crate::registration::find_foreign_associations(&mut WindowsRegistry, module) {
+        Ok(conflicts) if conflicts.is_empty() => {}
+        Ok(conflicts) => {
+            for conflict in &conflicts {
+                eprintln!("csv-preview: {}", conflict.message());
+            }
+            if !force {
+                eprintln!(
+                    "csv-preview: registration refused; run with force to replace the foreign handler"
+                );
+                return ERROR_ALREADY_EXISTS;
             }
         }
-        if let Err((error, rollback_errors)) = apply_plan(&mut WindowsRegistry, &plan) {
-            eprintln!(
-                "csv-preview: registration failed: {error}; rollback errors: {rollback_errors:?}"
-            );
-            return E_FAIL;
+        Err(error) => {
+            // The preflight cannot prove safety but also found no foreign
+            // value; proceed as before and let apply_plan's rollback bound
+            // the damage.
+            eprintln!("csv-preview: registration preflight failed: {error}");
         }
-        S_OK
     }
+    let plan = register_plan(module);
+    if let Err((error, rollback_errors)) = apply_plan(&mut WindowsRegistry, &plan) {
+        eprintln!(
+            "csv-preview: registration failed: {error}; rollback errors: {rollback_errors:?}"
+        );
+        return E_FAIL;
+    }
+    S_OK
 }
 
 fn unregister_module() -> HRESULT {
@@ -1161,18 +1741,58 @@ fn unregister_module() -> HRESULT {
     }
 }
 
+/// CLI entry for `csv-viewer.exe --register` (cfg(windows) only). The package
+/// is registered from the running executable's own directory; without a DLL
+/// next to it there is nothing to register.
+pub fn register_command(force: bool) -> HRESULT {
+    match unsafe { module_path() } {
+        Some(path) => register_module(&path.to_string_lossy(), force),
+        None => {
+            eprintln!(
+                "csv-preview: this DLL was not found through the running executable; \
+                 --register only works for modules on disk"
+            );
+            E_FAIL
+        }
+    }
+}
+
+/// CLI entry for `csv-viewer.exe --unregister` (cfg(windows) only).
+pub fn unregister_command() -> HRESULT {
+    unregister_module()
+}
+
 struct WindowsRegistry;
 
 impl Registry for WindowsRegistry {
     type Error = String;
-    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<String>, String> {
-        unsafe { read_value(key, name) }
+    fn read(&mut self, key: &str, name: Option<&str>) -> Result<Option<Value>, String> {
+        unsafe { read_value_under(HKEY_CURRENT_USER, &registry_path(key), name) }
+    }
+    fn read_classes_root(
+        &mut self,
+        key: &str,
+        name: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        // HKEY_CLASSES_ROOT is the HKLM∪HKCU merge; writes keep going to the
+        // user hive, this is only for the preflight.
+        unsafe { read_value_under(HKEY_CLASSES_ROOT, key, name) }
     }
     fn delete_value(&mut self, key: &str, name: Option<&str>) -> Result<(), String> {
         unsafe { delete_value(key, name) }
     }
     fn write(&mut self, entry: &RegistryValue) -> Result<(), String> {
         unsafe { write_value(entry) }
+    }
+    fn delete_tree(&mut self, key: &str) -> Result<(), String> {
+        let full = wide(&registry_path(key));
+        let status = unsafe { SHDeleteKeyW(HKEY_CURRENT_USER, full.as_ptr()) };
+        // A tree that was never created is already as removed as it can be.
+        if status == 0 || status == ERROR_FILE_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(format!("SHDeleteKeyW failed with {status}"))
+        }
     }
 }
 
@@ -1184,61 +1804,28 @@ fn registry_path(key: &str) -> String {
     }
 }
 
-unsafe fn read_default(key: &str) -> Option<String> {
-    let full = wide(&registry_path(key));
-    let mut handle: HKEY = ptr::null_mut();
-    if RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle) != 0 {
-        return None;
-    }
-    let mut value_type = 0u32;
-    let mut length = 0u32;
-    let status = RegQueryValueExW(
-        handle,
-        ptr::null(),
-        ptr::null_mut(),
-        &mut value_type,
-        ptr::null_mut(),
-        &mut length,
-    );
-    if status != 0 || length == 0 {
-        RegCloseKey(handle);
-        return None;
-    }
-    let mut buffer = vec![0u8; length as usize];
-    let status = RegQueryValueExW(
-        handle,
-        ptr::null(),
-        ptr::null_mut(),
-        &mut value_type,
-        buffer.as_mut_ptr(),
-        &mut length,
-    );
-    RegCloseKey(handle);
-    if status != 0 {
-        return None;
-    }
-    let utf16: Vec<u16> = buffer
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .take_while(|unit| *unit != 0)
-        .collect();
-    Some(String::from_utf16_lossy(&utf16))
-}
-
 unsafe fn write_value(entry: &RegistryValue) -> Result<(), String> {
     let full = registry_path(&entry.key);
     let handle = create_key(&full)?;
     let name = entry.name.map(wide);
-    let value = wide(&entry.value);
+    let name_ptr = name
+        .as_ref()
+        .map(|name| name.as_ptr())
+        .unwrap_or(ptr::null());
+    let (value_type, bytes): (u32, Vec<u8>) = match &entry.value {
+        Value::Text(text) => {
+            let units = wide(text);
+            (REG_SZ, units.iter().flat_map(|u| u.to_le_bytes()).collect())
+        }
+        Value::Dword(number) => (REG_DWORD, number.to_le_bytes().to_vec()),
+    };
     let status = RegSetValueExW(
         handle,
-        name.as_ref()
-            .map(|name| name.as_ptr())
-            .unwrap_or(ptr::null()),
+        name_ptr,
         0,
-        REG_SZ,
-        value.as_ptr() as *const u8,
-        (value.len() * 2) as u32,
+        value_type,
+        bytes.as_ptr(),
+        bytes.len() as u32,
     );
     RegCloseKey(handle);
     if status == 0 {
@@ -1268,10 +1855,14 @@ unsafe fn delete_value(key: &str, name: Option<&str>) -> Result<(), String> {
     }
 }
 
-unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, String> {
-    let full = wide(&registry_path(key));
+unsafe fn read_value_under(
+    root: HKEY,
+    key: &str,
+    name: Option<&str>,
+) -> Result<Option<Value>, String> {
+    let full = wide(key);
     let mut handle: HKEY = ptr::null_mut();
-    let status = RegOpenKeyExW(HKEY_CURRENT_USER, full.as_ptr(), 0, KEY_READ, &mut handle);
+    let status = RegOpenKeyExW(root, full.as_ptr(), 0, KEY_READ, &mut handle);
     if status == 2 {
         return Ok(None);
     }
@@ -1298,7 +1889,7 @@ unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, St
             Err(format!("RegQueryValueExW failed with {status}"))
         };
     }
-    if value_type != REG_SZ {
+    if value_type != REG_SZ && value_type != REG_DWORD {
         RegCloseKey(handle);
         return Ok(None);
     }
@@ -1318,16 +1909,25 @@ unsafe fn read_value(key: &str, name: Option<&str>) -> Result<Option<String>, St
     if status != 0 {
         return Err(format!("RegQueryValueExW failed with {status}"));
     }
-    if value_type != REG_SZ {
-        return Ok(None);
-    }
     buffer.truncate(length as usize);
-    let utf16: Vec<u16> = buffer
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .take_while(|unit| *unit != 0)
-        .collect();
-    Ok(Some(String::from_utf16_lossy(&utf16)))
+    match value_type {
+        REG_DWORD => {
+            let mut bytes = [0u8; 4];
+            for (slot, byte) in bytes.iter_mut().zip(buffer.iter()) {
+                *slot = *byte;
+            }
+            Ok(Some(Value::Dword(u32::from_le_bytes(bytes))))
+        }
+        REG_SZ => {
+            let utf16: Vec<u16> = buffer
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .take_while(|unit| *unit != 0)
+                .collect();
+            Ok(Some(Value::Text(String::from_utf16_lossy(&utf16))))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Create a key and any missing parents.
@@ -1390,11 +1990,30 @@ extern "system" {
     fn GetLastError() -> DWORD;
 }
 
+#[link(name = "ole32")]
+extern "system" {
+    fn CoInitializeEx(reserved: *mut c_void, co_init: u32) -> HRESULT;
+    fn CoUninitialize();
+    fn CoMarshalInterThreadInterfaceInStream(
+        riid: *const GUID,
+        object: *mut c_void,
+        stream: *mut *mut c_void,
+    ) -> HRESULT;
+    fn CoGetInterfaceAndReleaseStream(
+        stream: *mut c_void,
+        riid: *const GUID,
+        object: *mut *mut c_void,
+    ) -> HRESULT;
+}
+
 #[link(name = "user32")]
 extern "system" {
     fn GetDC(window: HWND) -> HDC;
     fn ReleaseDC(window: HWND, dc: HDC) -> i32;
     fn RegisterClassW(class: *const WNDCLASSW) -> u16;
+    fn UnregisterClassW(class: LPCWSTR, instance: HINSTANCE) -> BOOL;
+    #[cfg(test)]
+    fn GetClassInfoExW(instance: HINSTANCE, class: LPCWSTR, info: *mut WNDCLASSEXW) -> BOOL;
     fn CreateWindowExW(
         ex_style: DWORD,
         class_name: LPCWSTR,
@@ -1426,6 +2045,10 @@ extern "system" {
     fn PostMessageW(window: HWND, message: UINT, wparam: WPARAM, lparam: LPARAM) -> BOOL;
     fn SetWindowLongPtrW(window: HWND, index: i32, value: isize) -> isize;
     fn GetWindowLongPtrW(window: HWND, index: i32) -> isize;
+    /// Per-monitor DPI of the window; children included (07A-10).
+    fn GetDpiForWindow(window: HWND) -> UINT;
+    #[cfg(test)]
+    fn SendMessageW(window: HWND, message: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
 }
 
 #[link(name = "gdi32")]
@@ -1453,6 +2076,12 @@ extern "system" {
     fn SetTextColor(device: HDC, color: u32) -> u32;
     fn SetBkMode(device: HDC, mode: i32) -> i32;
     fn CreateSolidBrush(color: u32) -> HBRUSH;
+}
+
+#[link(name = "shlwapi")]
+extern "system" {
+    /// Deletes a key and everything below it (the C1 uninstall policy).
+    fn SHDeleteKeyW(root: HKEY, sub_key: LPCWSTR) -> LONG;
 }
 
 #[link(name = "advapi32")]
@@ -1498,11 +2127,569 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+    #[cfg(test)]
+    unsafe fn font_average_char_width(window: HWND, font: HFONT) -> i32 {
+        let dc = GetDC(window);
+        let previous = SelectObject(dc, font);
+        let mut size = SIZE { cx: 0, cy: 0 };
+        let sample = wide("M");
+        let measured = GetTextExtentPoint32W(dc, sample.as_ptr(), 1, &mut size);
+        SelectObject(dc, previous);
+        ReleaseDC(window, dc);
+        assert_ne!(measured, 0, "text metrics must be measurable");
+        size.cx
+    }
+
+    /// 07A-11 subset 1: a click must focus the pane (its F hotkey is then
+    /// reachable), WM_KEYDOWN must compare VK codes (0x46 = VK_F triggers,
+    /// and the old lowercase-literal branch, 0x66, spuriously matched
+    /// VK_NUMPAD6). Drives the real window proc through real messages.
+    #[test]
+    fn click_focuses_the_pane_and_vks_compare_correctly() {
+        unsafe {
+            let instance = GetModuleHandleW(ptr::null());
+            let parent_class = wide("CsvViewerPreviewTestParentClass");
+            let atom = RegisterClassW(&WNDCLASSW {
+                style: 0,
+                lpfnWndProc: Some(DefWindowProcW),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance,
+                hIcon: ptr::null_mut(),
+                hCursor: ptr::null_mut(),
+                hbrBackground: ptr::null_mut(),
+                lpszMenuName: ptr::null(),
+                lpszClassName: parent_class.as_ptr(),
+            });
+            assert_ne!(
+                atom,
+                0,
+                "parent RegisterClassW failed with {}",
+                GetLastError()
+            );
+            let parent = CreateWindowExW(
+                0,
+                parent_class.as_ptr(),
+                wide("parent").as_ptr(),
+                0,
+                0,
+                0,
+                400,
+                300,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            );
+            assert!(!parent.is_null(), "parent CreateWindowExW failed");
+            let class_name = wide("CsvViewerPreviewFocusTestClass");
+            let atom = register_window_class(instance, &class_name);
+            assert_ne!(
+                atom,
+                0,
+                "pane RegisterClassW failed with {}",
+                GetLastError()
+            );
+            let pane = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("pane").as_ptr(),
+                WS_CHILD,
+                0,
+                0,
+                120,
+                60,
+                parent,
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            );
+            assert!(!pane.is_null(), "pane CreateWindowExW failed");
+            let object = Box::into_raw(Box::new(PreviewObject {
+                vtbl: &PREVIEW_VTBL,
+                refcount: AtomicU32::new(1),
+                stream: ptr::null_mut(),
+                parent,
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 120,
+                    bottom: 60,
+                },
+                window: pane,
+                font: ptr::null_mut(),
+                brush: ptr::null_mut(),
+                session: None,
+                text: Vec::new(),
+                init: InitInterface {
+                    vtbl: &INIT_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                site: SiteInterface {
+                    vtbl: &SITE_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                frame: ptr::null_mut(),
+            }));
+            SetWindowLongPtrW(pane, GWLP_USERDATA, object as isize);
+
+            // A click activates the child pane (07A-11: set focus to it).
+            assert_ne!(GetFocus(), pane, "precondition: focus elsewhere");
+            SendMessageW(pane, WM_MOUSEACTIVATE, parent as WPARAM, 0);
+            assert_eq!(GetFocus(), pane, "clicking the pane must focus it");
+
+            // VK_F (0x46) must reach the scan path; with no session the scan
+            // fails into the error text, which proves the arm ran.
+            SendMessageW(pane, WM_KEYDOWN, VK_F, 0);
+            assert!(
+                !(*object).text.is_empty(),
+                "VK_F must trigger the scan path"
+            );
+
+            // The old b'f' comparison (0x66) spuriously matched VK_NUMPAD6;
+            // it must not trigger anything.
+            (*object).text.clear();
+            SendMessageW(pane, WM_KEYDOWN, 0x66, 0);
+            assert!(
+                (*object).text.is_empty(),
+                "VK_NUMPAD6 must not trigger the scan any more"
+            );
+
+            SetWindowLongPtrW(pane, GWLP_USERDATA, 0);
+            DestroyWindow(pane);
+            DestroyWindow(parent);
+            drop(Box::from_raw(object));
+        }
+    }
+
+    /// A minimal host `IPreviewHandlerFrame` that records the keys it is
+    /// asked to translate, mirroring parquet-viewer L5's harness (07A-11).
+    #[allow(dead_code)]
+    struct FakeFrame {
+        vtbl: *const IPreviewHandlerFrameVtbl,
+        refs: AtomicU32,
+        translated: AtomicBool,
+        last_key: AtomicUsize,
+    }
+
+    unsafe extern "system" fn fake_frame_qi(
+        this: *mut c_void,
+        iid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if iid.is_null() || out.is_null() {
+            return E_POINTER;
+        }
+        *out = ptr::null_mut();
+        let iid = *iid;
+        if iid == IID_IUNKNOWN || iid == IID_IPREVIEWHANDLERFRAME {
+            (*(this as *mut FakeFrame))
+                .refs
+                .fetch_add(1, Ordering::SeqCst);
+            *out = this;
+            S_OK
+        } else {
+            E_NOINTERFACE
+        }
+    }
+
+    unsafe extern "system" fn fake_frame_add_ref(this: *mut c_void) -> ULONG {
+        let frame = this as *mut FakeFrame;
+        (*frame).refs.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    unsafe extern "system" fn fake_frame_release(this: *mut c_void) -> ULONG {
+        let frame = this as *mut FakeFrame;
+        let previous = (*frame).refs.fetch_sub(1, Ordering::SeqCst);
+        if previous == 1 {
+            drop(Box::from_raw(frame));
+            0
+        } else {
+            previous - 1
+        }
+    }
+
+    unsafe extern "system" fn fake_frame_get_window_context(
+        _this: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if out.is_null() {
+            return E_POINTER;
+        }
+        *out = ptr::null_mut();
+        E_FAIL
+    }
+
+    unsafe extern "system" fn fake_frame_translate_accelerator(
+        this: *mut c_void,
+        message: *mut MSG,
+    ) -> HRESULT {
+        let frame = this as *mut FakeFrame;
+        if !message.is_null() {
+            (*frame).last_key.store((*message).wParam, Ordering::SeqCst);
+            (*frame).translated.store(true, Ordering::SeqCst);
+        }
+        S_OK
+    }
+
+    static FAKE_FRAME_VTBL: IPreviewHandlerFrameVtbl = IPreviewHandlerFrameVtbl {
+        query_interface: fake_frame_qi,
+        add_ref: fake_frame_add_ref,
+        release: fake_frame_release,
+        get_window_context: fake_frame_get_window_context,
+        translate_accelerator: fake_frame_translate_accelerator,
+    };
+
+    /// 07A-11 subset 2: `IObjectWithSite` hands the handler the host site,
+    /// from which we query `IPreviewHandlerFrame`; unhandled keys offered
+    /// through `TranslateAccelerator` are then forwarded to the frame.
+    /// Without a site the handler fails closed (S_FALSE).
+    #[test]
+    fn unhandled_keys_forward_to_the_host_frame() {
+        unsafe {
+            let object = Box::new(PreviewObject {
+                vtbl: &PREVIEW_VTBL,
+                refcount: AtomicU32::new(1),
+                stream: ptr::null_mut(),
+                parent: ptr::null_mut(),
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                window: ptr::null_mut(),
+                font: ptr::null_mut(),
+                brush: ptr::null_mut(),
+                session: None,
+                text: Vec::new(),
+                init: InitInterface {
+                    vtbl: &INIT_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                site: SiteInterface {
+                    vtbl: &SITE_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                frame: ptr::null_mut(),
+            });
+            let object = Box::into_raw(object);
+            (*object).init.owner = object;
+            (*object).site.owner = object;
+
+            // Without a site, TranslateAccelerator fails closed and
+            // GetSite fails.
+            let msg = MSG {
+                hwnd: ptr::null_mut(),
+                message: WM_KEYDOWN,
+                wParam: 0x09, // VK_TAB belongs to the host
+                lParam: 0,
+                time: 0,
+                pt: POINT { x: 0, y: 0 },
+            };
+            assert_eq!(
+                preview_translate_accelerator(object as *mut c_void, &msg as *const _ as *mut MSG),
+                S_FALSE
+            );
+            let mut site: *mut c_void = ptr::null_mut();
+            assert_eq!(
+                query_preview_interface(object, &IID_IOBJECTWITHSITE, &mut site),
+                S_OK
+            );
+            let site_table = *(site as *mut *const IObjectWithSiteVtbl);
+            let mut got: *mut c_void = ptr::null_mut();
+            assert_eq!(
+                ((*site_table).get_site)(site, &IID_IUNKNOWN, &mut got),
+                E_FAIL,
+                "GetSite without a site must fail"
+            );
+
+            // Attach a fake host frame through SetSite.
+            let frame = Box::into_raw(Box::new(FakeFrame {
+                vtbl: &FAKE_FRAME_VTBL,
+                refs: AtomicU32::new(1),
+                translated: AtomicBool::new(false),
+                last_key: AtomicUsize::new(0),
+            }));
+            assert_eq!(((*site_table).set_site)(site, frame as *mut c_void), S_OK);
+            assert!(!(*object).frame.is_null(), "SetSite must store the frame");
+
+            // GetSite must hand back a frame reference through its vtable.
+            assert_eq!(
+                ((*site_table).get_site)(site, &IID_IUNKNOWN, &mut got),
+                S_OK
+            );
+            assert_eq!(
+                got, frame as *mut c_void,
+                "GetSite must return the stored frame"
+            );
+            release_interface(got);
+
+            // An unhandled key (Tab) must be forwarded to the frame.
+            assert_eq!(
+                preview_translate_accelerator(object as *mut c_void, &msg as *const _ as *mut MSG),
+                S_OK
+            );
+            assert!((*frame).translated.load(Ordering::SeqCst));
+            assert_eq!((*frame).last_key.load(Ordering::SeqCst), 0x09);
+
+            // SetSite(NULL) tears the site down: the frame reference is
+            // released and forwarding fails closed again.
+            assert_eq!(((*site_table).set_site)(site, ptr::null_mut()), S_OK);
+            assert!((*object).frame.is_null());
+            assert_eq!(
+                preview_translate_accelerator(object as *mut c_void, &msg as *const _ as *mut MSG),
+                S_FALSE
+            );
+            assert_eq!(
+                (*frame).refs.load(Ordering::SeqCst),
+                1,
+                "the frame reference stored in the handled object must be released with the site"
+            );
+
+            // Teardown: the object is dropped directly (release bookkeeping
+            // through the COM counters is exercised by the factory path), and
+            // the frame's creation reference goes with the test. The stored
+            // frame reference was already released by SetSite(NULL), hence
+            // the remaining count of 1.
+            drop(Box::from_raw(object));
+            release_interface(frame as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn fn_font_em_height_mirrors_the_legacy_formula() {
+        assert_eq!(font_em_height(96), -14);
+        assert_eq!(font_em_height(192), -28);
+        // Degenerate DPI still yields at least a one-pixel font.
+        assert_eq!(font_em_height(0), -1);
+        assert_eq!(font_em_height(1), -1);
+    }
+
+    /// 07A-10: a preview pane is a WS_CHILD window, so it receives
+    /// WM_DPICHANGED_AFTERPARENT (0x02E3), never WM_DPICHANGED, when the
+    /// host Explorer moves between monitors. The delivered message must
+    /// rebuild the pane's font at `GetDpiForWindow` scaling. Before the fix
+    /// no arm matched 0x02E3 and the font stayed stale.
+    #[test]
+    fn dpichanged_afterparent_rebuilds_the_font() {
+        unsafe {
+            let class_name = wide("CsvViewerPreviewDpiTestClass");
+            let instance = GetModuleHandleW(ptr::null());
+            let atom = register_window_class(instance, &class_name);
+            assert_ne!(atom, 0, "RegisterClassW failed with {}", GetLastError());
+            let window = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("dpi").as_ptr(),
+                0,
+                0,
+                0,
+                120,
+                60,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            );
+            assert!(!window.is_null(), "CreateWindowExW failed");
+            let stale_font = CreateFontW(
+                16,
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                FIXED_PITCH | FF_MODERN,
+                wide("Consolas").as_ptr(),
+            );
+            assert!(!stale_font.is_null());
+            let object = Box::into_raw(Box::new(PreviewObject {
+                vtbl: &PREVIEW_VTBL,
+                refcount: AtomicU32::new(1),
+                stream: ptr::null_mut(),
+                parent: ptr::null_mut(),
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 120,
+                    bottom: 60,
+                },
+                window,
+                font: stale_font,
+                brush: ptr::null_mut(),
+                session: None,
+                text: Vec::new(),
+                init: InitInterface {
+                    vtbl: &INIT_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                site: SiteInterface {
+                    vtbl: &SITE_VTBL,
+                    owner: ptr::null_mut(),
+                },
+                frame: ptr::null_mut(),
+            }));
+            SetWindowLongPtrW(window, GWLP_USERDATA, object as isize);
+
+            // The message a child actually receives must rebuild the font.
+            SendMessageW(window, WM_DPICHANGED_AFTERPARENT, 0, 0);
+            let rebuilt = (*object).font;
+            assert!(
+                !rebuilt.is_null(),
+                "WM_DPICHANGED_AFTERPARENT must leave the font rebuilt"
+            );
+            let dpi = GetDpiForWindow(window) as i32;
+            assert!(dpi > 0, "GetDpiForWindow must report the pane's DPI");
+            let expected = CreateFontW(
+                font_em_height(dpi),
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                FIXED_PITCH | FF_MODERN,
+                wide("Consolas").as_ptr(),
+            );
+            assert_eq!(
+                font_average_char_width(window, rebuilt),
+                font_average_char_width(window, expected),
+                "the rebuilt font must be sized from GetDpiForWindow"
+            );
+            assert_ne!(
+                rebuilt, stale_font,
+                "the stale font must have been dropped and rebuilt"
+            );
+            assert_ne!(
+                font_average_char_width(window, rebuilt),
+                font_average_char_width(window, stale_font),
+                "the rebuild must actually rescale (stale 16 px vs {dpi} dpi)"
+            );
+
+            // The top-level WM_DPICHANGED arm keeps its behavior.
+            SendMessageW(window, WM_DPICHANGED, 0, 0);
+            assert!(
+                !(*object).font.is_null(),
+                "WM_DPICHANGED must still rebuild the font"
+            );
+
+            SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+            DestroyWindow(window);
+            drop(Box::from_raw(object));
+        }
+    }
+
+    /// 07A-06: the class is registered with the module we hand to
+    /// `register_window_class`, not with whatever `GetModuleHandleW(NULL)`
+    /// resolves. A different always-loaded system DLL proves the point.
+    #[test]
+    fn window_class_registers_with_the_given_module() {
+        let name = wide("CsvViewerPreviewTestClass");
+        let exe = unsafe { GetModuleHandleW(ptr::null()) };
+        let other = unsafe { GetModuleHandleW(wide("kernel32.dll").as_ptr()) };
+        assert!(!other.is_null(), "kernel32 must be loaded");
+        assert_ne!(other, exe, "the test needs a non-EXE module handle");
+        let atom = unsafe { register_window_class(other, &name) };
+        assert_ne!(atom, 0, "RegisterClassW failed with {}", unsafe {
+            GetLastError()
+        });
+        let mut info: WNDCLASSEXW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
+        let found = unsafe { GetClassInfoExW(other, name.as_ptr(), &mut info) };
+        assert_ne!(found, 0, "GetClassInfoExW could not find the class");
+        assert_eq!(info.hInstance, other, "the class must use the given module");
+    }
+
+    /// 07A-06: `DllCanUnloadNow` refuses while any library thread is running;
+    /// a thread outliving an otherwise-idle library must not allow an unload.
+    #[test]
+    fn unload_is_refused_while_a_library_thread_is_alive() {
+        let alive = crate::lifecycle::LiveThread::enter();
+        assert_eq!(unsafe { DllCanUnloadNow() }, S_FALSE);
+        drop(alive);
+    }
+
+    /// 07A-05: an unwind out of an `extern "system"` function aborts the
+    /// process since Rust 1.81, and prevhost.exe may host other handlers too.
+    /// Every contained entry must come back as its fallback value instead;
+    /// this test reaching its assertions past four injected panics is the
+    /// abort-proof evidence.
+    #[test]
+    fn panic_in_preview_does_not_abort_host() {
+        assert_eq!(contain_hresult(|| panic!("injected preview panic")), E_FAIL);
+        assert_eq!(
+            contain_hresult_or(S_FALSE, || panic!("injected fallback choice")),
+            S_FALSE
+        );
+        // A refcount fallback of 1 is leak-safe: the DLL simply stays loaded.
+        assert_eq!(contain_ulong(|| panic!("injected refcount panic")), 1);
+        // The window proc falls back to the default procedure (WM_NULL).
+        contain_lresult(ptr::null_mut(), 0, 0, 0, || {
+            panic!("injected wndproc panic")
+        });
+    }
 
     #[test]
     fn parses_the_registration_clsid() {
         let guid = parse_guid(CLSID_CSV_PREVIEW).unwrap();
         assert_eq!(guid.data1, 0x8f6a0f5e);
         assert_eq!(guid.data4[7], 0x60);
+    }
+
+    #[link(name = "shlwapi")]
+    extern "system" {
+        fn SHCreateMemStream(init: *const u8, size: u32) -> *mut c_void;
+    }
+
+    /// The marshalling contract the fixed preview path relies on: a host stream
+    /// created on the host apartment is readable on another thread after
+    /// marshal/unmarshal, and the marshalled stream is consumed exactly once.
+    #[test]
+    fn a_host_stream_marshals_across_apartments() {
+        use std::io::Read;
+        let payload: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        let stream = unsafe { SHCreateMemStream(payload.as_ptr(), payload.len() as u32) };
+        assert!(!stream.is_null(), "SHCreateMemStream failed");
+        let initialised = unsafe { CoInitializeEx(ptr::null_mut(), COINIT_APARTMENTTHREADED) };
+        assert!(
+            initialised >= 0,
+            "CoInitializeEx failed: 0x{initialised:08X}"
+        );
+        let marshalled = unsafe { marshal_stream(stream) }.expect("marshal the host stream");
+        let pointer = SendPtr(marshalled);
+
+        let handle = std::thread::spawn(move || {
+            let mut reader = MarshalledReader {
+                marshalled: pointer,
+                stream: None,
+            };
+            let mut out = Vec::new();
+            reader
+                .read_to_end(&mut out)
+                .expect("read the marshalled stream");
+            out
+        });
+        let out = handle.join().unwrap();
+        assert_eq!(out, payload);
+        unsafe {
+            stream_release(stream);
+            CoUninitialize();
+        }
     }
 }

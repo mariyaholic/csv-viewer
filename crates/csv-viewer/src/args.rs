@@ -4,6 +4,21 @@ use std::path::PathBuf;
 
 use csvview_core::{DateFormat, EncodingKind, HeaderChoice};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationAction {
+    Register,
+    Unregister,
+}
+
+impl RegistrationAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Register => "register",
+            Self::Unregister => "unregister",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Options {
     pub path: PathBuf,
@@ -18,6 +33,11 @@ pub struct Options {
     /// Zero-based column index after parsing a 1-based command-line value.
     pub date_column: Option<usize>,
     pub date_format: Option<DateFormat>,
+    /// An explicit `--register`/`--unregister` action; takes the place of the
+    /// input path.
+    pub registration: Option<RegistrationAction>,
+    /// With `--register`, replace an existing foreign handler.
+    pub force: bool,
 }
 
 impl Options {
@@ -34,6 +54,8 @@ impl Options {
             settings: None,
             date_column: None,
             date_format: None,
+            registration: None,
+            force: false,
         };
         let mut path = None;
         let mut arguments = arguments.peekable();
@@ -85,6 +107,9 @@ impl Options {
                     });
                 }
                 "--no-header" => options.header = Some(HeaderChoice::Absent),
+                "--register" => options.registration = Some(RegistrationAction::Register),
+                "--unregister" => options.registration = Some(RegistrationAction::Unregister),
+                "--force" => options.force = true,
                 "--settings" => {
                     options.settings = Some(PathBuf::from(
                         arguments
@@ -117,7 +142,8 @@ impl Options {
                 }
                 "--help" | "-h" => {
                     println!(
-                        "csv-viewer {}\n\nUsage: csv-viewer [options] <file.csv>\n\n\
+                        "csv-viewer {}\n\nUsage: csv-viewer [options] <file.csv>\n\
+                         or:    csv-viewer --register [--force] / --unregister\n\n\
                          Options:\n  --render           print a plain-text preview and exit\n  \
                          --full             run one complete scan before showing the view\n  \
                          --rows N           preview rows (default 200)\n  \
@@ -128,7 +154,11 @@ impl Options {
                          --no-header        shorthand for --header absent\n  \
                          --settings PATH    per-user settings JSON\n  \
                          --date-column N    selected 1-based column for a date range\n  \
-                         --date-format F    ymd, dmy or mdy (required with --date-column)\n\n\
+                         --date-format F    ymd, dmy or mdy (required with --date-column)\n  \
+                         --register         become the .csv preview handler (Windows;\n\
+                                            per-user, opt-in, asks for confirmation)\n  \
+                         --unregister       remove the .csv preview handler registration\n  \
+                         --force            with --register: replace an existing foreign handler\n\n\
                          Read-only. No network, telemetry, editing or SQL.\n\
                          Made by Maria. free and open source (Apache-2.0).",
                         env!("CARGO_PKG_VERSION")
@@ -150,7 +180,21 @@ impl Options {
                 }
             }
         }
-        options.path = path.ok_or_else(|| "an input path is required".to_string())?;
+        if options.registration.is_some() {
+            if let Some(path) = path {
+                let action = options.registration.unwrap_or(RegistrationAction::Register);
+                return Err(format!(
+                    "--{} does not open a file ({})",
+                    action.label(),
+                    path.display()
+                ));
+            }
+        } else {
+            options.path = path.ok_or_else(|| "an input path is required".to_string())?;
+        }
+        if options.force && options.registration != Some(RegistrationAction::Register) {
+            return Err("--force only goes with --register".to_string());
+        }
         if options.date_column.is_some() != options.date_format.is_some() {
             return Err("--date-column and --date-format must be used together".to_string());
         }
@@ -223,5 +267,23 @@ mod tests {
         assert!(parse(&["--header", "maybe", "x.csv"]).is_err());
         assert!(parse(&["a.csv", "b.csv"]).is_err());
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn parses_registration_requests() {
+        let options = parse(&["--register"]).unwrap();
+        assert_eq!(options.registration, Some(RegistrationAction::Register));
+        assert!(!options.force);
+
+        // --force belongs to --register only.
+        assert!(parse(&["--unregister", "--force"]).is_err());
+
+        // --force belongs to --register only.
+        assert!(parse(&["--unregister", "--force"]).is_err());
+        assert!(parse(&["--force", "x.csv"]).is_err());
+        // A registration action does not open a file...
+        assert!(parse(&["--register", "data.csv"]).is_err());
+        // ...and the input path still needs to be there for a scan run.
+        assert!(parse(&["--force", "--register", "data.csv"]).is_err());
     }
 }
