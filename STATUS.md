@@ -1,5 +1,14 @@
 # Status
 
+## Standalone desktop architecture — proposed 2026-11-02
+
+- Added `docs/STANDALONE-ARCHITECTURE.md`: GUI boundaries, truthful sample/scan
+  capabilities, worker lifecycle, theme contract, staged delivery and acceptance.
+- Grounded in both engines, trading desk/mic-mute native UI and pinned MH Ticker
+  source plus Paper/PC-98 screenshots. No runtime dependencies or application code changed.
+- Documentation/source-reference checks passed; no GUI, benchmark, native accessibility
+  validation or new application test pass is claimed. Start implementation at S0.
+
 ## Latest hosted verification — 2026-11-02
 
 [measured] Current tracked RS source: 12,955 lines across 34 files,
