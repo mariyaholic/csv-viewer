@@ -11,4 +11,6 @@ mkdir -p "$out"
 for file in csv-viewer.exe csv-worker.exe csv_preview.dll; do
   cp "${CARGO_TARGET_DIR:-target}/x86_64-pc-windows-gnu/release/$file" "$out/$file"
 done
-(cd "$out" && sha256sum csv-viewer.exe csv-worker.exe csv_preview.dll > SHA256SUMS)
+python3 scripts/generate-third-party-licenses.py --check
+cp LICENSE NOTICE THIRD_PARTY.md THIRD_PARTY_LICENSES.txt "$out/"
+(cd "$out" && sha256sum csv-viewer.exe csv-worker.exe csv_preview.dll LICENSE NOTICE THIRD_PARTY.md THIRD_PARTY_LICENSES.txt > SHA256SUMS)

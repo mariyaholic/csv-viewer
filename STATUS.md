@@ -1,5 +1,57 @@
 # Status
 
+## Latest hosted verification — 2026-11-02
+
+[measured] Current tracked RS source: 12,955 lines across 34 files,
+including tests (raw physical lines, not a production-only LOC estimate).
+
+This section supersedes historical local/CI assumptions below. Changes are on
+`fix/remaining-plan-issues`; no push, CI trigger or release publication occurred.
+
+- **07A-15 fixed:** CLI registration and unregistration resolve the existing
+  companion `csv_preview.dll`, not the EXE. Missing/present DLL regression
+  passes. Actual debug and release Wine CLI registry readbacks point to the DLL;
+  uninstall removes the owned tree/leaves and also cleans a legacy EXE-valued
+  registration. Release DLL regsvr32 registration/unregistration still works.
+- **07A-16 fixed at the handler layer:** early stream/start failures retain a
+  child pane with a read-only diagnostic rather than returning before child
+  creation. The real DoPreview/reopen regression is red against the original
+  implementation and green after restoration. Class registration can recur
+  after its last-object unregistration. Native Explorer reproduction remains open.
+- **COM test deadlock fixed:** source STA pumps while the background proxy
+  reads; the complete-payload assertion remains, with a 20 s failure deadline.
+  No marshalling test is skipped.
+- **Release notices:** generated offline Cargo licence texts are committed,
+  checked by the build scripts, copied/hash-listed with LICENSE/NOTICE and
+  THIRD_PARTY, and attached by the tag workflow. Shell/PowerShell script line
+  endings are pinned to LF. Python 3 is required at build time for the licence check.
+- **Strict Linux lint:** Windows confirmation helper is compiled only on
+  Windows or in tests; all portable confirmation regressions remain enabled.
+
+Verified with Rust/Cargo 1.99.1, MinGW GCC 12, Wine 11, serial test execution:
+- `cargo fmt --all -- --check`: pass.
+- `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`:
+  pass on Linux; same command with `--target x86_64-pc-windows-gnu`: pass.
+- `cargo build --workspace --locked --offline` and `cargo test --workspace
+  --locked --offline -- --test-threads=1`: **134 passed, 1 ignored** on Linux.
+- Build/test with `--target x86_64-pc-windows-gnu`, runner `wine`:
+  **145 passed, 1 ignored**, unfiltered; both new handler/resolver regressions
+  and the formerly hanging cross-apartment case pass.
+- The ignored `worker_backend` integration was explicitly run and passed on
+  both targets with CSV_VIEWER_WORKER set to the built worker.
+- `cargo deny --offline check licenses bans`: pass (allowance warnings).
+- `python3 scripts/generate-third-party-licenses.py --check`: pass.
+- `bash scripts/build-windows.sh`: real GNU release build passed; SHA256SUMS
+  verifies all 7 payload files. Release CLI renders quoted_multiline.csv in Wine.
+
+Evidence: portfolio `verification/FINAL-RESULTS.json`, round-2 logs, CSV
+red-regression/registry/release-smoke logs and `release-payloads.json`.
+Native Explorer isolation, visual/large-file/DPI/unload checks and native
+PowerShell/MSVC packaging remain unverified; `docs/TESTING.md` records each
+XR-2 item. CI's pinned Rust 1.85.0 was not installed/run here. Parquet and GNU
+runtime licence warnings are not waived by a local cross-build.
+
+
 Made by Maria. Apache-2.0.
 
 The CSV viewer, parser, bounded preview session, worker, protocol and Windows
