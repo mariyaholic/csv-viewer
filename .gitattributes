@@ -1,0 +1,6 @@
+# Test fixtures must survive checkout byte for byte: a Windows-runner
+# checkout (core.autocrlf true) converted LF to CRLF inside the quoted
+# multiline cell, flipping `preserves_quoted_multiline_cells` to red
+# (run 41395676072). Pin the whole fixtures directory so checkout and
+# commit keep the committed bytes, whatever core.autocrlf says locally.
+crates/csv-core/tests/fixtures/** -text
