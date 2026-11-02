@@ -131,3 +131,52 @@ The following must be exercised on a real Windows PC before release:
   hosting and any MSIX/installer behaviour.
 - The `csvview_windows_check` cfg only type-checks the Windows module on Linux;
   it does not link or execute it.
+
+## Hosted acceptance follow-up — 2026-11-02 (Linux + Wine 11)
+
+This run is not the native Windows PC referenced by XR-2. Wine runs Windows
+binaries and real Win32/COM code, but does not certify Explorer isolation,
+physical DPI transitions, or DLL unload by native prevhost. Commands and raw
+results are in the portfolio's `verification/` directory; STATUS.md records
+the consolidated suite results. Native items remain open even when automated
+corroboration below passes.
+
+### XR-2 item-by-item
+1. Low-IL temp path: **native blocked**. DWORD registration tests pass; Wine
+   does not prove prevhost integrity or native Explorer preview.
+2. Blocking copy: **partial**. Real COM marshalling and prompt head-only
+   session tests run; >=2 GB Explorer responsiveness/cancellation is pending.
+3. Console flash: **partial**. Real worker-through-pipes test runs with the
+   production spawn flags; native visual F-key check remains pending.
+4. Worker RAM: **partial**. Oversize-field budget regressions run; native
+   200 MB bomb peak RSS measurement is pending.
+5. Panic containment: **partial**. Real containment entry shapes survive
+   injected panics under Wine; injected native prevhost refresh is pending.
+6. DLL unload/window class: **partial**. Reopened real child-pane failure
+   regression and unload-gate tests run; native FreeLibrary/selection x50 is pending.
+7. Conflict preflight: **partial**. HKCR/HKCU conflict seams run; live
+   machine-wide competitor registration on native Windows is pending.
+8. Residue: **partial**. Actual Wine CLI registration/unregistration was
+   read back: CLSID and both owned association leaves disappear. Native HKLM
+   handler fallback after uninstall is still pending.
+9. Exact-cap: **automated corroboration passed** (exact-cap and cap+1 tests).
+   Native Explorer marker check remains pending.
+10. DPI: **partial**. Real HWND DPI-message/font tests run under Wine;
+    physical 100%/200% monitor transition is pending.
+11. Keys/focus: **partial**. Real HWND click/VK and frame-forwarding tests run;
+    native Explorer F/Tab traversal remains pending.
+12. 07A-15: **Wine registry acceptance passed**. `csv-viewer.exe --register`
+    writes `InprocServer32` ending in `csv_preview.dll`, not the EXE;
+    `--unregister` removes the registered tree and leaves. The missing-DLL and
+    present-DLL resolver regression also runs. Native Explorer selection is pending.
+13. 07A-16: **Wine handler regression passed**. A failing IStream Read enters
+    the real DoPreview method; it leaves a diagnostic child pane containing
+    "Could not preview this file." and "Read-only." after reopening. The same
+    test fails against the original DoPreview implementation (E_FAIL before
+    child creation). Native clean-registration/Explorer failure capture is pending.
+
+The early-stream/start failure path now owns a normal child pane and returns
+S_OK after painting its diagnostic, so the host can retain that surface. Missing
+initialization/parent and failed CreateWindow still return failure. This is a
+child of the preview host, never a popup. Window-class registration is idempotent
+rather than process-once, because the last object unregisters it.

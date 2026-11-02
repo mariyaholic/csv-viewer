@@ -8,7 +8,11 @@ cargo build --locked --release --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { throw 'Cargo build failed' }
 New-Item -ItemType Directory -Force dist | Out-Null
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
+python scripts/generate-third-party-licenses.py --check
+if ($LASTEXITCODE -ne 0) { throw 'Third-party licence bundle is stale' }
+$docs = @('LICENSE', 'NOTICE', 'THIRD_PARTY.md', 'THIRD_PARTY_LICENSES.txt')
+foreach ($doc in $docs) { Copy-Item $doc dist }
 $files = @('csv-viewer.exe', 'csv-worker.exe', 'csv_preview.dll')
 foreach ($file in $files) { Copy-Item (Join-Path $target "x86_64-pc-windows-msvc/release/$file") dist }
-$hashes = foreach ($file in $files) { $hash = (Get-FileHash (Join-Path dist $file) -Algorithm SHA256).Hash.ToLowerInvariant(); "$hash  $file" }
+$hashes = foreach ($file in ($files + $docs)) { $hash = (Get-FileHash (Join-Path dist $file) -Algorithm SHA256).Hash.ToLowerInvariant(); "$hash  $file" }
 [IO.File]::WriteAllLines((Join-Path (Get-Location) 'dist/SHA256SUMS'), [string[]]$hashes, [Text.UTF8Encoding]::new($false))
