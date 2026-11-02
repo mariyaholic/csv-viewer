@@ -32,6 +32,15 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
+
+  # cargo-deny-action is container-based and only runs on Linux (proven by
+  # the mh-ticker first CI run, run 41384343756: "Container action is only
+  # supported on Linux"); it gets its own job instead of riding the Windows
+  # one.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check dependency licences and bans (cargo-deny)
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
