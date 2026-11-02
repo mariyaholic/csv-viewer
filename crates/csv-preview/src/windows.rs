@@ -66,6 +66,9 @@ const STATFLAG_NONAME: u32 = 0x0000_0001;
 const COINIT_MULTITHREADED: u32 = 0x0;
 const WM_SIZE: UINT = 0x0005;
 const WM_DPICHANGED: UINT = 0x02E0;
+// 07A-10: child panes only receive this; WM_DPICHANGED goes to top-level
+// windows and never reaches a WS_CHILD preview pane.
+const WM_DPICHANGED_AFTERPARENT: UINT = 0x02E3;
 const LOGPIXELSY: i32 = 90;
 const WM_PAINT: UINT = 0x000F;
 const WM_ERASEBKGND: UINT = 0x0014;
@@ -1066,6 +1069,60 @@ static CLASS_NAME: OnceLock<Vec<u16>> = OnceLock::new();
 
 const WINDOW_CLASS_NAME: &str = "CsvViewerPreview";
 
+/// Font em height for a DPI (07A-10). Mirrors the legacy LOGPIXELSY formula
+/// so the lazy WM_PAINT builder and the DPI rebuild agree: a 14 px em at the
+/// 96-dpi reference scale, clamped to at least one pixel.
+fn font_em_height(dpi: i32) -> i32 {
+    -(14 * dpi.max(1) / 96).max(1)
+}
+
+/// The window's effective DPI (07A-10). `GetDpiForWindow` is per-monitor
+/// aware and also valid for child windows; the legacy device-context metric
+/// is the fallback for a window that cannot report one. Both null inputs
+/// yield 0 (unknown).
+unsafe fn window_dpi(window: HWND, device: HDC) -> i32 {
+    let dpi = GetDpiForWindow(window) as i32;
+    if dpi > 0 {
+        dpi
+    } else if !device.is_null() {
+        GetDeviceCaps(device, LOGPIXELSY)
+    } else {
+        0
+    }
+}
+
+/// Rebuilds the cached preview font for the window's current DPI (07A-10),
+/// so a pane carried to a different monitor rescales. A null window keeps
+/// the lazy path: WM_PAINT then rebuilds the font from the paint device.
+fn rebuild_font_for_dpi(window: HWND, font: HFONT) -> HFONT {
+    unsafe {
+        if !font.is_null() {
+            DeleteObject(font);
+        }
+        // Without a window DPI, WM_PAINT rebuilds lazily from the device.
+        let dpi = window_dpi(window, ptr::null_mut());
+        if dpi == 0 {
+            return ptr::null_mut();
+        }
+        CreateFontW(
+            font_em_height(dpi),
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            FIXED_PITCH | FF_MODERN,
+            wide("Consolas").as_ptr(),
+        )
+    }
+}
+
 unsafe extern "system" fn preview_window_proc(
     window: HWND,
     message: UINT,
@@ -1075,11 +1132,13 @@ unsafe extern "system" fn preview_window_proc(
     contain_lresult(window, message, wparam, lparam, || unsafe {
         let object = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut PreviewObject;
         match message {
-            WM_SIZE | WM_DPICHANGED => {
+            WM_SIZE | WM_DPICHANGED | WM_DPICHANGED_AFTERPARENT => {
                 if !object.is_null() {
-                    if message == WM_DPICHANGED && !(*object).font.is_null() {
-                        DeleteObject((*object).font);
-                        (*object).font = ptr::null_mut();
+                    if message != WM_SIZE && !(*object).font.is_null() {
+                        // 07A-10: a DPI change (children only ever see the
+                        // AFTERPARENT form) rescales the font at the window's
+                        // current DPI instead of merely dropping it.
+                        (*object).font = rebuild_font_for_dpi(window, (*object).font);
                     }
                     (*object).refresh_text();
                 }
@@ -1121,7 +1180,7 @@ unsafe fn paint_window(window: HWND, object: *mut PreviewObject) {
         let object = &mut *object;
         if object.font.is_null() {
             object.font = CreateFontW(
-                -(14 * GetDeviceCaps(device, LOGPIXELSY).max(1) / 96).max(1),
+                font_em_height(window_dpi(window, device)),
                 0,
                 0,
                 0,
@@ -1771,6 +1830,10 @@ extern "system" {
     fn PostMessageW(window: HWND, message: UINT, wparam: WPARAM, lparam: LPARAM) -> BOOL;
     fn SetWindowLongPtrW(window: HWND, index: i32, value: isize) -> isize;
     fn GetWindowLongPtrW(window: HWND, index: i32) -> isize;
+    /// Per-monitor DPI of the window; children included (07A-10).
+    fn GetDpiForWindow(window: HWND) -> UINT;
+    #[cfg(test)]
+    fn SendMessageW(window: HWND, message: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
 }
 
 #[link(name = "gdi32")]
@@ -1851,6 +1914,148 @@ mod tests {
     use super::*;
 
     const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+    #[cfg(test)]
+    unsafe fn font_average_char_width(window: HWND, font: HFONT) -> i32 {
+        let dc = GetDC(window);
+        let previous = SelectObject(dc, font);
+        let mut size = SIZE { cx: 0, cy: 0 };
+        let sample = wide("M");
+        let measured = GetTextExtentPoint32W(dc, sample.as_ptr(), 1, &mut size);
+        SelectObject(dc, previous);
+        ReleaseDC(window, dc);
+        assert_ne!(measured, 0, "text metrics must be measurable");
+        size.cx
+    }
+
+    #[test]
+    fn fn_font_em_height_mirrors_the_legacy_formula() {
+        assert_eq!(font_em_height(96), -14);
+        assert_eq!(font_em_height(192), -28);
+        // Degenerate DPI still yields at least a one-pixel font.
+        assert_eq!(font_em_height(0), -1);
+        assert_eq!(font_em_height(1), -1);
+    }
+
+    /// 07A-10: a preview pane is a WS_CHILD window, so it receives
+    /// WM_DPICHANGED_AFTERPARENT (0x02E3), never WM_DPICHANGED, when the
+    /// host Explorer moves between monitors. The delivered message must
+    /// rebuild the pane's font at `GetDpiForWindow` scaling. Before the fix
+    /// no arm matched 0x02E3 and the font stayed stale.
+    #[test]
+    fn dpichanged_afterparent_rebuilds_the_font() {
+        unsafe {
+            let class_name = wide("CsvViewerPreviewDpiTestClass");
+            let instance = GetModuleHandleW(ptr::null());
+            let atom = register_window_class(instance, &class_name);
+            assert_ne!(atom, 0, "RegisterClassW failed with {}", GetLastError());
+            let window = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("dpi").as_ptr(),
+                0,
+                0,
+                0,
+                120,
+                60,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            );
+            assert!(!window.is_null(), "CreateWindowExW failed");
+            let stale_font = CreateFontW(
+                16,
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                FIXED_PITCH | FF_MODERN,
+                wide("Consolas").as_ptr(),
+            );
+            assert!(!stale_font.is_null());
+            let object = Box::into_raw(Box::new(PreviewObject {
+                vtbl: &PREVIEW_VTBL,
+                refcount: AtomicU32::new(1),
+                stream: ptr::null_mut(),
+                parent: ptr::null_mut(),
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 120,
+                    bottom: 60,
+                },
+                window,
+                font: stale_font,
+                brush: ptr::null_mut(),
+                session: None,
+                text: Vec::new(),
+                init: InitInterface {
+                    vtbl: &INIT_VTBL,
+                    owner: ptr::null_mut(),
+                },
+            }));
+            SetWindowLongPtrW(window, GWLP_USERDATA, object as isize);
+
+            // The message a child actually receives must rebuild the font.
+            SendMessageW(window, WM_DPICHANGED_AFTERPARENT, 0, 0);
+            let rebuilt = (*object).font;
+            assert!(
+                !rebuilt.is_null(),
+                "WM_DPICHANGED_AFTERPARENT must leave the font rebuilt"
+            );
+            let dpi = GetDpiForWindow(window) as i32;
+            assert!(dpi > 0, "GetDpiForWindow must report the pane's DPI");
+            let expected = CreateFontW(
+                font_em_height(dpi),
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                FIXED_PITCH | FF_MODERN,
+                wide("Consolas").as_ptr(),
+            );
+            assert_eq!(
+                font_average_char_width(window, rebuilt),
+                font_average_char_width(window, expected),
+                "the rebuilt font must be sized from GetDpiForWindow"
+            );
+            assert_ne!(
+                rebuilt, stale_font,
+                "the stale font must have been dropped and rebuilt"
+            );
+            assert_ne!(
+                font_average_char_width(window, rebuilt),
+                font_average_char_width(window, stale_font),
+                "the rebuild must actually rescale (stale 16 px vs {dpi} dpi)"
+            );
+
+            // The top-level WM_DPICHANGED arm keeps its behavior.
+            SendMessageW(window, WM_DPICHANGED, 0, 0);
+            assert!(
+                !(*object).font.is_null(),
+                "WM_DPICHANGED must still rebuild the font"
+            );
+
+            SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+            DestroyWindow(window);
+            drop(Box::from_raw(object));
+        }
+    }
 
     /// 07A-06: the class is registered with the module we hand to
     /// `register_window_class`, not with whatever `GetModuleHandleW(NULL)`
