@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{Cursor, Read};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -197,11 +197,20 @@ fn timeout_does_not_publish_a_report() {
     assert!(snapshot.full_report.is_none());
 }
 
+/// 07A-12: the worker integration runs only when explicitly requested
+/// (`cargo test -- --ignored`, which CI does after building the workspace).
+/// A missing binary can no longer hide behind a green skip: an explicit run
+/// without the worker fails.
 #[test]
+#[ignore = "needs csv-worker built; run explicitly with -- --ignored (CI does, after cargo build --workspace)"]
 fn worker_backend_matches_in_process_report() {
     let Some(worker) = worker_beside_test_executable() else {
-        eprintln!("skipping worker integration: build csv-worker first");
-        return;
+        if std::env::var_os("CI").is_some() {
+            panic!("CI is missing csv-worker.exe; build the workspace before the tests");
+        }
+        panic!(
+            "worker integration requires csv-worker.exe; build the workspace first (cargo build --workspace)"
+        );
     };
     let request = ScanRequest::full();
     let session = PreviewSession::start(
@@ -278,6 +287,10 @@ impl Read for SlowReader {
 
 #[test]
 fn slow_stream_preview_still_returns_a_head() {
+    // 07A-12: production composes `read_head` on the host apartment and hands
+    // the rest of the stream to the session through `start_with_head`
+    // (07A-02). Test that composition, not the plain `start` shortcut that
+    // production never takes.
     let mut csv = b"a,b\n".to_vec();
     for index in 0..50 {
         csv.extend_from_slice(format!("{index},value\n").as_bytes());
@@ -285,17 +298,98 @@ fn slow_stream_preview_still_returns_a_head() {
     let mut config = config();
     config.head_bytes = 32;
     let request = ScanRequest::full();
-    let session = PreviewSession::start(
-        SlowReader {
-            data: csv,
-            position: 0,
-        },
-        None,
-        &request,
-        config,
-    )
-    .unwrap();
+    let mut reader = SlowReader {
+        data: csv.clone(),
+        position: 0,
+    };
+    let head = csv_preview::session::read_head(&mut reader, config.head_bytes).unwrap();
+    assert_eq!(head.len(), 32);
+    let session = PreviewSession::start_with_head(head, reader, None, &request, config).unwrap();
     assert!(session.snapshot().preview.is_some());
+    // The slow remainder is spooled completely on the session thread.
+    assert!(session.wait_for_spool(Duration::from_secs(10)));
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.phase, SessionPhase::SpoolReady);
+    // The spool file holds the head plus everything after it: the whole
+    // source. (bytes_read is unchanged - the head was read from the same
+    // single stream once.)
+    assert_eq!(
+        snapshot.spool.bytes,
+        csv.len() as u64,
+        "the rest of the slow stream must be spooled completely"
+    );
+    assert!(!snapshot.spool.truncated);
+}
+
+/// 07A-12: exactly one copy of the source flows from the reader into the
+/// spool. A duplicate copy (a spooled tempfile being spooled again) or a
+/// re-read would show up as a byte count above the source size.
+#[test]
+fn the_source_flows_into_the_spool_exactly_once() {
+    #[derive(Default)]
+    struct CountingReader {
+        data: Vec<u8>,
+        position: usize,
+        zero_reads: Arc<AtomicUsize>,
+        bytes_read: Arc<AtomicUsize>,
+    }
+
+    impl Read for CountingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.position >= self.data.len() {
+                self.zero_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(0);
+            }
+            let take = buffer.len().min(self.data.len() - self.position);
+            buffer[..take].copy_from_slice(&self.data[self.position..self.position + take]);
+            self.position += take;
+            self.bytes_read
+                .fetch_add(take, std::sync::atomic::Ordering::SeqCst);
+            Ok(take)
+        }
+    }
+
+    let data = CSV.to_vec();
+    let mut config = config();
+    config.head_bytes = 16;
+    let request = ScanRequest::full();
+    let bytes_read = Arc::new(AtomicUsize::new(0));
+    let zero_reads = Arc::new(AtomicUsize::new(0));
+    let reader = CountingReader {
+        data: data.clone(),
+        position: 0,
+        zero_reads: Arc::clone(&zero_reads),
+        bytes_read: Arc::clone(&bytes_read),
+    };
+    let mut reader = reader;
+    let head = csv_preview::session::read_head(&mut reader, config.head_bytes).unwrap();
+    assert_eq!(head.len(), 16);
+    let head_bytes = bytes_read.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(head_bytes, 16, "the head comes from the same single stream");
+    let session = PreviewSession::start_with_head(head, reader, None, &request, config).unwrap();
+    assert!(session.wait_for_spool(Duration::from_secs(5)));
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.phase, SessionPhase::SpoolReady);
+    assert!(!snapshot.spool.truncated);
+    let expected = data.len() - 16;
+    assert_eq!(
+        bytes_read.load(std::sync::atomic::Ordering::SeqCst),
+        head_bytes + expected,
+        "every byte must be read exactly once - the head on the calling \
+         thread and the rest once by the spool thread"
+    );
+    // The spool file contains the head too (write_spool writes it first),
+    // so the full source size must appear as the spooled byte count.
+    assert_eq!(
+        snapshot.spool.bytes,
+        data.len() as u64,
+        "the spooled byte count must match the read byte count"
+    );
+    assert!(
+        zero_reads.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "the spool must have detected the end of the source"
+    );
 }
 
 /// A source that keeps producing slowly. A whole-stream copy would not return

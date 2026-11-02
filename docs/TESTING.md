@@ -68,10 +68,13 @@ The following must be exercised on a real Windows PC before release:
      network share.
    - Verify `IInitializeWithStream` rejects write modes and handles `IStream`
      `Read`/`Stat` failures.
-   - **Apartment/stream lifetime:** the caller copies the stream to a bounded
-     temporary file before passing a file handle to the spool thread. Verify COM
-     calls and releases occur on the owning apartment, test read errors and a
-     slow stream. The synchronous copy may delay Explorer up to the spool cap.
+   - **Apartment/stream lifetime:** the handler reads only the head on the
+     host apartment and marshals the rest of the stream to the spool thread
+     (`CoMarshalInterThreadInterfaceInStream`/`CoGetInterfaceAndReleaseStream`,
+     07A-02); a stream that cannot be marshalled falls back to a bounded copy
+     on the host thread before the handover. Verify COM calls and releases
+     occur on the owning apartment, test read errors and a slow stream. The
+     marshalled path never blocks the host apartment for a whole-file copy.
    - Change selection while a full scan is running: the old session must
      cancel and the new preview must appear.
    - Kill `csv-worker.exe` mid-scan and confirm a failure/timeout message, no
