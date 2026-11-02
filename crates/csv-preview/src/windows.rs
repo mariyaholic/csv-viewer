@@ -24,7 +24,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -997,8 +997,9 @@ impl Drop for PreviewObject {
 }
 
 unsafe fn ensure_window_class() {
-    static REGISTER: Once = Once::new();
-    REGISTER.call_once(|| {
+    // Registration is idempotent, but not once-only: the last COM object
+    // unregisters the class and a subsequent preview must register it again.
+    {
         let class_name = CLASS_NAME.get_or_init(|| wide(WINDOW_CLASS_NAME));
         let atom = register_window_class(this_module(), class_name);
         if atom == 0 {
@@ -1009,7 +1010,7 @@ unsafe fn ensure_window_class() {
                 eprintln!("csv-preview: RegisterClassW failed: {error}");
             }
         }
-    });
+    }
 }
 
 /// `class_name` must outlive the registration: Windows keeps the pointer.
@@ -1084,36 +1085,6 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
             object.window = ptr::null_mut();
         }
 
-        let mut request = ScanRequest::preview();
-        let (settings, _) = Settings::load(None);
-        settings.apply_to(&mut request);
-        let reader = StreamReader::new(object.stream);
-        let length_hint = stream_size_hint(object.stream);
-        let config = PreviewConfig::default();
-
-        // Read only the bounded head here, on the host's own apartment, so the
-        // first screen appears promptly. The rest of the stream is read on the
-        // session's spool thread (marshalled across apartments), so this thread
-        // is never blocked for a whole-file copy.
-        let mut reader = reader;
-        let head = match crate::session::read_head(&mut reader, config.head_bytes) {
-            Ok(head) => head,
-            Err(error) => {
-                object.set_error_text(&format!("CSV preview could not read stream: {error}"));
-                return E_FAIL;
-            }
-        };
-        let session = match start_spooled_session(&mut reader, head, length_hint, &request, config)
-        {
-            Ok(session) => Arc::new(session),
-            Err(error) => {
-                object.set_error_text(&format!("CSV preview could not start: {error}"));
-                return E_FAIL;
-            }
-        };
-        object.session = Some(session);
-        object.refresh_text();
-
         ensure_window_class();
         let width = (object.rect.right - object.rect.left).max(320);
         let height = (object.rect.bottom - object.rect.top).max(200);
@@ -1139,6 +1110,37 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
         }
         object.window = window;
         SetWindowLongPtrW(window, GWLP_USERDATA, object as *mut PreviewObject as isize);
+
+        let mut request = ScanRequest::preview();
+        let (settings, _) = Settings::load(None);
+        settings.apply_to(&mut request);
+        let reader = StreamReader::new(object.stream);
+        let length_hint = stream_size_hint(object.stream);
+        let config = PreviewConfig::default();
+
+        // Read only the bounded head here, on the host's own apartment, so the
+        // first screen appears promptly. The rest of the stream is read on the
+        // session's spool thread (marshalled across apartments), so this thread
+        // is never blocked for a whole-file copy.
+        let mut reader = reader;
+        let head = match crate::session::read_head(&mut reader, config.head_bytes) {
+            Ok(head) => head,
+            Err(error) => {
+                object.set_error_text(&format!("CSV preview could not read stream: {error}"));
+                UpdateWindow(object.window);
+                return S_OK;
+            }
+        };
+        let session = match start_spooled_session(&mut reader, head, length_hint, &request, config)
+        {
+            Ok(session) => Arc::new(session),
+            Err(error) => {
+                object.set_error_text(&format!("CSV preview could not start: {error}"));
+                UpdateWindow(object.window);
+                return S_OK;
+            }
+        };
+        object.session = Some(session);
         object.refresh_text();
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
@@ -1149,7 +1151,7 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
 impl PreviewObject {
     unsafe fn set_error_text(&mut self, message: &str) {
         self.text = wide_text(&format!(
-            "CSV viewer and preview — Made by Maria\n\n{message}\n\nRead-only."
+            "CSV viewer and preview — Made by Maria\n\nCould not preview this file.\n{message}\n\nRead-only."
         ));
         if !self.window.is_null() {
             InvalidateRect(self.window, ptr::null(), 1);
@@ -1744,8 +1746,13 @@ fn unregister_module() -> HRESULT {
 /// CLI entry for `csv-viewer.exe --register` (cfg(windows) only). The package
 /// is registered from the running executable's own directory; without a DLL
 /// next to it there is nothing to register.
+fn resolve_module_dll(module: &std::path::Path) -> Option<PathBuf> {
+    let dll = module.parent()?.join("csv_preview.dll");
+    dll.is_file().then_some(dll)
+}
+
 pub fn register_command(force: bool) -> HRESULT {
-    match unsafe { module_path() } {
+    match unsafe { module_path() }.and_then(|path| resolve_module_dll(&path)) {
         Some(path) => register_module(&path.to_string_lossy(), force),
         None => {
             eprintln!(
@@ -1759,7 +1766,17 @@ pub fn register_command(force: bool) -> HRESULT {
 
 /// CLI entry for `csv-viewer.exe --unregister` (cfg(windows) only).
 pub fn unregister_command() -> HRESULT {
-    unregister_module()
+    let Some(module) = (unsafe { module_path() }).and_then(|path| resolve_module_dll(&path)) else {
+        eprintln!("csv-preview: csv_preview.dll was not found next to the executable");
+        return E_FAIL;
+    };
+    match unregister(&mut WindowsRegistry, &module.to_string_lossy()) {
+        Ok(()) => S_OK,
+        Err(error) => {
+            eprintln!("csv-preview: unregistration failed: {error}");
+            E_FAIL
+        }
+    }
 }
 
 struct WindowsRegistry;
@@ -2130,6 +2147,13 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn PeekMessageW(msg: *mut MSG, hwnd: HWND, min: u32, max: u32, remove: u32) -> BOOL;
+        fn TranslateMessage(msg: *const MSG) -> BOOL;
+        fn DispatchMessageW(msg: *const MSG) -> LRESULT;
+    }
 
     #[cfg(test)]
     unsafe fn font_average_char_width(window: HWND, font: HFONT) -> i32 {
@@ -2645,6 +2669,116 @@ mod tests {
         });
     }
 
+    /// Early IStream failure must leave a diagnostic child pane, including
+    /// after the last object/window class was released and used again.
+    #[test]
+    fn stream_read_failure_creates_a_diagnostic_pane_after_reopen() {
+        unsafe extern "system" fn retain(_this: *mut c_void) -> u32 {
+            1
+        }
+        unsafe extern "system" fn fail_read(
+            _this: *mut c_void,
+            _buffer: *mut c_void,
+            _size: u32,
+            read: *mut u32,
+        ) -> HRESULT {
+            *read = 0;
+            STG_E_ACCESSDENIED
+        }
+        unsafe extern "system" fn fail_stat(
+            _this: *mut c_void,
+            _stat: *mut STATSTG,
+            _flags: u32,
+        ) -> HRESULT {
+            E_FAIL
+        }
+        let table = IStreamVtbl {
+            query_interface: ptr::null(),
+            add_ref: retain as *const c_void,
+            release: retain as *const c_void,
+            read: fail_read,
+            write: ptr::null(),
+            seek: ptr::null(),
+            set_size: ptr::null(),
+            copy_to: ptr::null(),
+            commit: ptr::null(),
+            revert: ptr::null(),
+            lock_region: ptr::null(),
+            unlock_region: ptr::null(),
+            stat: fail_stat,
+            clone: ptr::null(),
+        };
+        let mut stream_table = &table as *const IStreamVtbl;
+        for _ in 0..2 {
+            unsafe {
+                let parent = CreateWindowExW(
+                    0,
+                    wide("STATIC").as_ptr(),
+                    wide("failure test").as_ptr(),
+                    0,
+                    0,
+                    0,
+                    640,
+                    480,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    this_module(),
+                    ptr::null_mut(),
+                );
+                assert!(!parent.is_null());
+                let mut object = Box::new(PreviewObject {
+                    vtbl: &PREVIEW_VTBL,
+                    refcount: AtomicU32::new(1),
+                    stream: &mut stream_table as *mut _ as *mut c_void,
+                    parent,
+                    rect: RECT {
+                        left: 0,
+                        top: 0,
+                        right: 640,
+                        bottom: 480,
+                    },
+                    window: ptr::null_mut(),
+                    font: ptr::null_mut(),
+                    brush: ptr::null_mut(),
+                    session: None,
+                    text: Vec::new(),
+                    init: InitInterface {
+                        vtbl: &INIT_VTBL,
+                        owner: ptr::null_mut(),
+                    },
+                    site: SiteInterface {
+                        vtbl: &SITE_VTBL,
+                        owner: ptr::null_mut(),
+                    },
+                    frame: ptr::null_mut(),
+                });
+                let status = preview_do_preview(&mut *object as *mut _ as *mut c_void);
+                let has_window = !object.window.is_null();
+                let text = String::from_utf16_lossy(&object.text);
+                drop(object);
+                DestroyWindow(parent);
+                unregister_window_class();
+                assert_eq!(status, S_OK, "the diagnostic pane handles the failure");
+                assert!(has_window, "failure must not leave the host blank");
+                assert!(text.contains("Could not preview this file."), "{text}");
+                assert!(text.contains("IStream::Read failed"), "{text}");
+                assert!(text.contains("Read-only."), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn registration_resolves_only_an_existing_companion_dll() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("csv-viewer.exe");
+        std::fs::write(&exe, b"test executable").unwrap();
+        assert_eq!(resolve_module_dll(&exe), None);
+        let dll = dir.path().join("csv_preview.dll");
+        std::fs::write(&dll, b"test DLL").unwrap();
+        assert_eq!(resolve_module_dll(&exe), Some(dll.clone()));
+        assert_eq!(resolve_module_dll(&dll), Some(dll));
+    }
+
     #[test]
     fn parses_the_registration_clsid() {
         let guid = parse_guid(CLSID_CSV_PREVIEW).unwrap();
@@ -2685,6 +2819,23 @@ mod tests {
                 .expect("read the marshalled stream");
             out
         });
+        // A host STA must pump COM calls while its worker reads a proxy.
+        // Blocking this apartment in join() deadlocks apartment-bound streams.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !handle.is_finished() {
+            unsafe {
+                let mut message: MSG = std::mem::zeroed();
+                while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, 1) != 0 {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "STA stream transfer timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         let out = handle.join().unwrap();
         assert_eq!(out, payload);
         unsafe {

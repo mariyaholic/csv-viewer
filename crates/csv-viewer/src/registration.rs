@@ -11,6 +11,7 @@ use crate::args::RegistrationAction;
 /// Print the warning, read one confirmation line, and run the registration.
 /// `execute` is only called after a y/yes answer; anything else cancels with
 /// nothing changed. Returns the outcome message for the caller to print.
+#[cfg(any(windows, test))]
 pub fn confirm_and_run(
     action: RegistrationAction,
     force: bool,
