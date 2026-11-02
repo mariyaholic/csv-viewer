@@ -73,6 +73,16 @@ const LOGPIXELSY: i32 = 90;
 const WM_PAINT: UINT = 0x000F;
 const WM_ERASEBKGND: UINT = 0x0014;
 const WM_KEYDOWN: UINT = 0x0100;
+// 07A-11: clicking the pane must move keyboard focus into it, or the F
+// hotkey can never fire.
+const WM_MOUSEACTIVATE: UINT = 0x0021;
+const WM_LBUTTONDOWN: UINT = 0x0201;
+const MA_ACTIVATE: i32 = 1;
+// 07A-11: WM_KEYDOWN's wparam is a virtual-key code. The previous
+// comparison used the character literals b'F'/b'f' — and 0x66, the old
+// lowercase branch, is VK_NUMPAD6, so Numpad-6 triggered the scan and
+// comparison-by-literal never meant anything.
+const VK_F: WPARAM = 0x46;
 const WM_DESTROY: UINT = 0x0002;
 const WM_APP_DONE: UINT = 0x8001;
 const WS_CHILD: u32 = 0x4000_0000;
@@ -1149,9 +1159,22 @@ unsafe extern "system" fn preview_window_proc(
                 0
             }
             WM_ERASEBKGND => 1,
-            WM_KEYDOWN if wparam == b'F' as usize || wparam == b'f' as usize => {
+            WM_KEYDOWN if wparam == VK_F => {
                 if !object.is_null() {
                     start_full_scan(&mut *object, window);
+                }
+                0
+            }
+            WM_MOUSEACTIVATE => {
+                // 07A-11: a click on the pane moves keyboard focus into it.
+                if !object.is_null() {
+                    SetFocus(window);
+                }
+                MA_ACTIVATE as LRESULT
+            }
+            WM_LBUTTONDOWN => {
+                if !object.is_null() {
+                    SetFocus(window);
                 }
                 0
             }
@@ -1926,6 +1949,123 @@ mod tests {
         ReleaseDC(window, dc);
         assert_ne!(measured, 0, "text metrics must be measurable");
         size.cx
+    }
+
+    /// 07A-11 subset 1: a click must focus the pane (its F hotkey is then
+    /// reachable), WM_KEYDOWN must compare VK codes (0x46 = VK_F triggers,
+    /// and the old lowercase-literal branch, 0x66, spuriously matched
+    /// VK_NUMPAD6). Drives the real window proc through real messages.
+    #[test]
+    fn click_focuses_the_pane_and_vks_compare_correctly() {
+        unsafe {
+            let instance = GetModuleHandleW(ptr::null());
+            let parent_class = wide("CsvViewerPreviewTestParentClass");
+            let atom = RegisterClassW(&WNDCLASSW {
+                style: 0,
+                lpfnWndProc: Some(DefWindowProcW),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance,
+                hIcon: ptr::null_mut(),
+                hCursor: ptr::null_mut(),
+                hbrBackground: ptr::null_mut(),
+                lpszMenuName: ptr::null(),
+                lpszClassName: parent_class.as_ptr(),
+            });
+            assert_ne!(
+                atom,
+                0,
+                "parent RegisterClassW failed with {}",
+                GetLastError()
+            );
+            let parent = CreateWindowExW(
+                0,
+                parent_class.as_ptr(),
+                wide("parent").as_ptr(),
+                0,
+                0,
+                0,
+                400,
+                300,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            );
+            assert!(!parent.is_null(), "parent CreateWindowExW failed");
+            let class_name = wide("CsvViewerPreviewFocusTestClass");
+            let atom = register_window_class(instance, &class_name);
+            assert_ne!(
+                atom,
+                0,
+                "pane RegisterClassW failed with {}",
+                GetLastError()
+            );
+            let pane = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("pane").as_ptr(),
+                WS_CHILD,
+                0,
+                0,
+                120,
+                60,
+                parent,
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            );
+            assert!(!pane.is_null(), "pane CreateWindowExW failed");
+            let object = Box::into_raw(Box::new(PreviewObject {
+                vtbl: &PREVIEW_VTBL,
+                refcount: AtomicU32::new(1),
+                stream: ptr::null_mut(),
+                parent,
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 120,
+                    bottom: 60,
+                },
+                window: pane,
+                font: ptr::null_mut(),
+                brush: ptr::null_mut(),
+                session: None,
+                text: Vec::new(),
+                init: InitInterface {
+                    vtbl: &INIT_VTBL,
+                    owner: ptr::null_mut(),
+                },
+            }));
+            SetWindowLongPtrW(pane, GWLP_USERDATA, object as isize);
+
+            // A click activates the child pane (07A-11: set focus to it).
+            assert_ne!(GetFocus(), pane, "precondition: focus elsewhere");
+            SendMessageW(pane, WM_MOUSEACTIVATE, parent as WPARAM, 0);
+            assert_eq!(GetFocus(), pane, "clicking the pane must focus it");
+
+            // VK_F (0x46) must reach the scan path; with no session the scan
+            // fails into the error text, which proves the arm ran.
+            SendMessageW(pane, WM_KEYDOWN, VK_F, 0);
+            assert!(
+                !(*object).text.is_empty(),
+                "VK_F must trigger the scan path"
+            );
+
+            // The old b'f' comparison (0x66) spuriously matched VK_NUMPAD6;
+            // it must not trigger anything.
+            (*object).text.clear();
+            SendMessageW(pane, WM_KEYDOWN, 0x66, 0);
+            assert!(
+                (*object).text.is_empty(),
+                "VK_NUMPAD6 must not trigger the scan any more"
+            );
+
+            SetWindowLongPtrW(pane, GWLP_USERDATA, 0);
+            DestroyWindow(pane);
+            DestroyWindow(parent);
+            drop(Box::from_raw(object));
+        }
     }
 
     #[test]
