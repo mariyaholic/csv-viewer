@@ -10,6 +10,13 @@
 //! The handler is deliberately read-only: it consumes the supplied `IStream`,
 //! displays text, and never writes the source or opens links.
 
+// 07A-13: this FFI layer mirrors the Windows SDK spelling (HWND, HDC,
+// HINSTANCE, LRESULT, ...), so clippy::upper_case_acronyms fires on 26
+// declarations here (DECISIONS.md 07A-13 ruling: triage into deliberate
+// allows, then make clippy strict). Renaming would leave the SDK names the
+// surrounding SDK-calling code and TESTING.md text refer to, so the allow
+// is whole-file and deliberate; it is not a licence for acronyms elsewhere.
+#![allow(clippy::upper_case_acronyms)]
 #![allow(non_snake_case, non_upper_case_globals)]
 
 use std::ffi::c_void;
