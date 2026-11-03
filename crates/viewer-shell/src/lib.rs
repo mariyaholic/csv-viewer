@@ -162,6 +162,8 @@ pub fn display_text(s: &str, limit: usize) -> String {
 }
 pub mod browse;
 pub mod buttons;
+pub mod guidance;
+pub mod preferences;
 pub mod supervisor;
 #[cfg(windows)]
 pub mod win32;

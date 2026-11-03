@@ -5,7 +5,8 @@
 use crate::{
     browse::{Navigation, Request},
     buttons::{material, visual, ButtonMaterial, ButtonState},
-    display_text,
+    display_text, guidance,
+    preferences::{self, Area, Preferences, Window},
     supervisor::{Adapter, Task},
     Document, THEMES,
 };
@@ -169,6 +170,13 @@ struct HighContrast {
     flags: u32,
     scheme: *mut u16,
 }
+#[repr(C)]
+struct MonitorInfo {
+    size: u32,
+    monitor: Rect,
+    work: Rect,
+    flags: u32,
+}
 #[link(name = "user32")]
 extern "system" {
     fn RegisterClassExW(c: *const WndClass) -> u16;
@@ -200,6 +208,12 @@ extern "system" {
     fn GetWindowLongPtrW(h: H, index: i32) -> isize;
     fn SetWindowTextW(h: H, s: *const u16) -> i32;
     fn GetClientRect(h: H, r: *mut Rect) -> i32;
+    fn GetWindowRect(h: H, r: *mut Rect) -> i32;
+    fn IsZoomed(h: H) -> i32;
+    fn IsIconic(h: H) -> i32;
+    fn MonitorFromRect(r: *const Rect, flags: u32) -> H;
+    fn MonitorFromWindow(h: H, flags: u32) -> H;
+    fn GetMonitorInfoW(h: H, info: *mut MonitorInfo) -> i32;
     fn MoveWindow(h: H, x: i32, y: i32, w: i32, height: i32, repaint: i32) -> i32;
     fn InvalidateRect(h: H, r: *const Rect, erase: i32) -> i32;
     fn RedrawWindow(h: H, r: *const Rect, region: H, flags: u32) -> i32;
@@ -299,7 +313,7 @@ unsafe fn settext(h: H, s: &str) {
 }
 #[derive(Clone, Copy, Default)]
 struct Paint {
-    buttons: [H; 8],
+    buttons: [H; 9],
     material: ButtonMaterial,
     forced: bool,
     details: H,
@@ -321,6 +335,13 @@ struct Host {
     ui: UnsafeCell<Ui>,
 }
 struct Ui {
+    clear: H,
+    empty: H,
+    geometry: Option<Window>,
+    restoring: bool,
+    settings_file: Option<PathBuf>,
+    settings_notice: Option<String>,
+    can_save: bool,
     query: H,
     find: H,
     previous: H,
@@ -363,6 +384,13 @@ struct Ui {
 impl Ui {
     fn new(adapter: Adapter, theme: usize) -> Self {
         Self {
+            clear: 0,
+            empty: 0,
+            geometry: None,
+            restoring: true,
+            settings_file: None,
+            settings_notice: None,
+            can_save: false,
             query: 0,
             find: 0,
             previous: 0,
@@ -406,6 +434,54 @@ impl Ui {
             columns: 0,
         }
     }
+    unsafe fn capture_geometry(&mut self) {
+        if self.restoring || self.window == 0 || IsIconic(self.window) != 0 {
+            return;
+        }
+        if IsZoomed(self.window) != 0 {
+            if let Some(g) = &mut self.geometry {
+                g.maximized = true;
+            }
+            return;
+        }
+        let mut r = Rect::default();
+        if GetWindowRect(self.window, &mut r) != 0 && r.right > r.left && r.bottom > r.top {
+            self.geometry = Some(Window {
+                x: r.left,
+                y: r.top,
+                width: (r.right - r.left) as u32,
+                height: (r.bottom - r.top) as u32,
+                dpi: GetDpiForWindow(self.window).max(96),
+                maximized: false,
+            });
+        }
+    }
+    unsafe fn reset_appearance(&mut self) {
+        self.restoring = true;
+        ShowWindow(self.window, 9);
+        let g = default_window().fit(
+            monitor_area(MonitorFromWindow(self.window, 2)),
+            self.dpi as u32,
+        );
+        SetWindowPos(
+            self.window,
+            0,
+            g.x,
+            g.y,
+            g.width as i32,
+            g.height as i32,
+            0x14,
+        );
+        self.theme = 0;
+        SendMessageW(self.combo, 0x14e, 0, 0);
+        self.settings_notice = None;
+        self.can_save = true;
+        self.restoring = false;
+        self.capture_geometry();
+        self.apply_theme();
+        self.layout();
+        self.refresh_status();
+    }
     unsafe fn child(&self, class: &str, label: &str, style: u32, id: isize) -> H {
         CreateWindowExW(
             0,
@@ -423,11 +499,14 @@ impl Ui {
         )
     }
     unsafe fn create(&mut self) {
+        // WM_NCCREATE supplies our host pointer; set the native caption explicitly
+        // so the taskbar / Alt+Tab and assistive window identification have a name.
+        settext(self.window, self.adapter.title);
         self.open = self.child("BUTTON", "&Open file…", 0x10000, 101);
         self.reload = self.child("BUTTON", "&Reload", 0x10000, 102);
         self.cancel = self.child("BUTTON", "&Cancel", 0x10000, 103);
         self.combo = self.child("COMBOBOX", "Theme", 0x10000 | 0x200000 | 3, 104);
-        self.about = self.child("BUTTON", "&About", 0x10000, 105);
+        self.about = self.child("BUTTON", "&Help", 0x10000, 105);
         self.copy = self.child("BUTTON", "Copy &shown row", 0x10000, 106);
         self.find_label = self.child("STATIC", "Search text", 0, 115);
         self.query = self.child("EDIT", "", 0x10000 | 0x80 | 0x800000, 111);
@@ -435,6 +514,8 @@ impl Ui {
         self.find = self.child("BUTTON", "&Find", 0x10000, 112);
         self.previous = self.child("BUTTON", "&Previous", 0x10000, 113);
         self.next = self.child("BUTTON", "&Next", 0x10000, 114);
+        self.clear = self.child("BUTTON", "Cl&ear search", 0x10000, 116);
+        self.empty = self.child("STATIC", guidance::empty(self.adapter.csv_spool), 0, 117);
         self.title = self.child("STATIC", self.adapter.title, 0, 107);
         self.status = self.child("STATIC", &self.doc.status, 0, 108);
         self.table = self.child(
@@ -451,7 +532,12 @@ impl Ui {
             110,
         );
         for t in THEMES {
-            SendMessageW(self.combo, 0x143, 0, wide(t.name).as_ptr() as isize);
+            SendMessageW(
+                self.combo,
+                0x143,
+                0,
+                wide(&format!("Theme: {}", t.name)).as_ptr() as isize,
+            );
         }
         SendMessageW(self.combo, 0x14e, self.theme, 0);
         DragAcceptFiles(self.window, 1);
@@ -486,17 +572,29 @@ impl Ui {
         }
         MoveWindow(self.title, q(18), q(66), w - q(36), q(42), 1);
         MoveWindow(self.find_label, q(20), q(124), q(88), q(28), 1);
-        MoveWindow(self.query, q(112), q(118), q(300), q(32), 1);
-        for (control, x, width) in [
-            (self.find, 428, 112),
-            (self.previous, 556, 132),
-            (self.next, 704, 120),
+        let query_width = (w - q(744)).clamp(q(160), q(300));
+        MoveWindow(self.query, q(112), q(118), query_width, q(32), 1);
+        let mut x = q(128) + query_width;
+        for (control, width) in [
+            (self.find, 112),
+            (self.previous, 132),
+            (self.next, 120),
+            (self.clear, 144),
         ] {
-            MoveWindow(control, q(x), q(114), q(width), q(40), 1);
+            MoveWindow(control, x, q(114), q(width), q(40), 1);
+            x += q(width + 16);
         }
         MoveWindow(self.status, q(18), h - q(66), w - q(36), q(56), 1);
         let side = q(310);
         let tablew = (w - side - q(52)).max(q(200));
+        MoveWindow(
+            self.empty,
+            q(32),
+            q(190),
+            tablew - q(32),
+            (h - q(280)).max(q(80)),
+            1,
+        );
         MoveWindow(
             self.table,
             q(16),
@@ -569,6 +667,7 @@ impl Ui {
                 self.find,
                 self.previous,
                 self.next,
+                self.clear,
             ],
             material: material(self.theme),
             forced,
@@ -653,6 +752,8 @@ impl Ui {
             self.previous,
             self.next,
             self.find_label,
+            self.clear,
+            self.empty,
         ] {
             SendMessageW(h, 0x30, self.font as usize, 1);
         }
@@ -683,7 +784,7 @@ impl Ui {
         o.filter = filter.as_ptr();
         o.file = buf.as_mut_ptr();
         o.file_max = buf.len() as u32;
-        o.flags = 0x1000 | 0x800 | 0x80000 | 8;
+        o.flags = 0x1000 | 0x800 | 0x80000 | 8 | 0x02000000; // do not add source to Recent Documents
         if GetOpenFileNameW(&mut o) != 0 {
             use std::os::windows::ffi::OsStringExt;
             let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
@@ -706,14 +807,13 @@ impl Ui {
             settext(self.details, "Opening new document…");
         }
         self.path = Some(path.clone());
-        settext(
-            self.title,
-            &format!(
-                "{} — {}",
-                self.adapter.title,
-                display_text(&path.file_name().unwrap_or_default().to_string_lossy(), 160)
-            ),
+        let title = format!(
+            "{} — {}",
+            self.adapter.title,
+            display_text(&path.file_name().unwrap_or_default().to_string_lossy(), 160)
         );
+        settext(self.title, &title);
+        settext(self.window, &title);
         // Reload starts from the beginning and explicitly adopts changed source metadata.
         let query = self.navigation.current.query.clone();
         settext(self.query, &query);
@@ -743,9 +843,40 @@ impl Ui {
     }
     unsafe fn refresh_status(&mut self) {
         self.dirty = true;
-        settext(self.status, &self.doc.status);
+        let status = match &self.settings_notice {
+            Some(notice) => format!("{}\r\n{}", self.doc.status, notice),
+            None => self.doc.status.clone(),
+        };
+        settext(self.status, &status);
+        let no_rows = self.doc.table.as_ref().is_none_or(|t| t.rows.is_empty());
+        let message = if self.task.is_some() {
+            "Reading file…\r\n\r\nCancel stops reading.".to_owned()
+        } else if let Some(t) = &self.doc.table {
+            if !self.navigation.current.query.is_empty() {
+                guidance::no_matches(t.page.as_ref().is_some_and(|p| p.next.is_some())).to_owned()
+            } else {
+                "No rows to show in this part of the file.".to_owned()
+            }
+        } else if self.path.is_none() {
+            guidance::empty(self.adapter.csv_spool).to_owned()
+        } else {
+            format!(
+                "{}\r\n\r\nChoose Open file… to try another file, or Reload to try again.",
+                display_text(&self.doc.status, 512)
+            )
+        };
+        settext(self.empty, &message);
+        ShowWindow(self.empty, if no_rows { 5 } else { 0 });
+        ShowWindow(self.table, if no_rows { 0 } else { 5 });
+        ShowWindow(self.details, if self.doc.table.is_some() { 5 } else { 0 });
+        EnableWindow(
+            self.clear,
+            (self.task.is_none()
+                && (SendMessageW(self.query, 0xe, 0, 0) > 0
+                    || !self.navigation.current.query.is_empty())) as i32,
+        );
         EnableWindow(self.cancel, self.task.is_some() as i32);
-        let ready = self.path.is_some() && self.task.is_none();
+        let ready = self.doc.table.is_some() && self.task.is_none();
         EnableWindow(self.find, ready as i32);
         EnableWindow(
             self.previous,
@@ -788,7 +919,19 @@ impl Ui {
                 self.columns += 1;
             }
             SendMessageW(self.table, 0x102f, t.rows.len(), 0);
-            settext(self.details, &t.details.replace('\n', "\r\n"));
+            settext(
+                self.details,
+                &format!(
+                    "{}\r\n\r\n{}\r\n{}",
+                    if t.rows.is_empty() {
+                        "No rows on this page."
+                    } else {
+                        "Select a row for details."
+                    },
+                    t.coverage,
+                    t.details.replace('\n', "\r\n")
+                ),
+            );
         }
         InvalidateRect(self.table, ptr::null(), 1);
     }
@@ -800,6 +943,17 @@ impl Ui {
         if let Some((g, r)) = result {
             self.task.take();
             let success = r.is_ok();
+            let r = r.map_err(|e| {
+                format!(
+                    "Could not read the file. {} {}",
+                    if self.doc.table.is_some() {
+                        "Your previous page is still shown."
+                    } else {
+                        "Choose Open file… or Reload to try again."
+                    },
+                    display_text(&e, 1024)
+                )
+            });
             if self.doc.finish(g, r) && success {
                 if let Some(mut request) = self.pending.take() {
                     request.expected = self
@@ -851,8 +1005,11 @@ impl Ui {
         };
         let text = wide(&row.join("\t"));
         if OpenClipboard(self.window) == 0 {
+            self.doc.status = "Could not access the clipboard. Try Copy shown row again.".into();
+            self.refresh_status();
             return;
         }
+        let mut copied = false;
         let h = GlobalAlloc(0x42, text.len() * 2);
         if h != 0 {
             let p = GlobalLock(h);
@@ -860,6 +1017,7 @@ impl Ui {
                 ptr::copy_nonoverlapping(text.as_ptr(), p.cast::<u16>(), text.len());
                 GlobalUnlock(h);
                 if EmptyClipboard() != 0 && SetClipboardData(13, h) != 0 {
+                    copied = true;
                     self.doc.status =
                         "Copied shown row only; truncated displays remain truncated.".into();
                 } else {
@@ -870,10 +1028,22 @@ impl Ui {
             }
         }
         CloseClipboard();
+        if !copied {
+            self.doc.status = "Could not copy the shown row. Try again.".into();
+        }
         self.refresh_status();
     }
     unsafe fn command(&mut self, id: u16, notification: u16) {
         match id {
+            111 if notification == 0x300 => self.refresh_status(),
+            116 if self.task.is_none() => {
+                settext(self.query, "");
+                if self.doc.table.is_some() {
+                    self.command(112, 0);
+                } else {
+                    self.refresh_status();
+                }
+            }
             112 if self.task.is_none() => {
                 let mut text = [0u16; 1025];
                 let n = GetWindowTextW(self.query, text.as_mut_ptr(), text.len() as i32).max(0)
@@ -937,7 +1107,21 @@ impl Ui {
                 }
             }
             105 => {
-                MessageBoxW(self.window,wide("Made by Maria\nFree and open source (Apache-2.0).\n\nRead-only, local, worker-backed sample inspector.\nSix base designs; no COM registration required.\nFirst desktop slice: 64 MiB input, 200 rows, 64 shown columns.\nNo edits, full scan or arbitrary paging in this slice.\nPrivate OFL fonts: Cinzel, Outfit, JetBrains Mono when supplied.\nNative accessibility acceptance is pending.").as_ptr(),wide("About standalone viewer").as_ptr(),0);
+                let recover = self.settings_notice.is_some() && self.settings_file.is_some();
+                let text = if recover {
+                    format!("{}\n\nSaved appearance could not be read. Reset saved size and theme?\nYes replaces only appearance settings; your files are not changed. No leaves the saved settings untouched.", guidance::HELP)
+                } else {
+                    guidance::HELP.to_owned()
+                };
+                let answer = MessageBoxW(
+                    self.window,
+                    wide(&text).as_ptr(),
+                    wide("Help and about").as_ptr(),
+                    if recover { 4 | 0x100 } else { 0 },
+                );
+                if recover && answer == 6 {
+                    self.reset_appearance();
+                }
             }
             106 if self.task.is_none() => self.copy_row(),
             _ => {}
@@ -1176,13 +1360,32 @@ unsafe extern "system" fn wndproc(h: H, m: u32, w: usize, l: isize) -> isize {
         }
         0x24 => {
             let mm = &mut *(l as *mut MinMax);
+            let work = monitor_area(MonitorFromWindow(h, 2));
             mm.min_track = Point {
-                x: 940 * s.dpi / 96,
-                y: 440 * s.dpi / 96,
+                x: (940 * s.dpi / 96).min(work.right - work.left),
+                y: (440 * s.dpi / 96).min(work.bottom - work.top),
             };
             0
         }
+        // DefWindowProc sends WM_MOVE/WM_SIZE synchronously here; the reentrancy
+        // guard intentionally skips their mutable work. Do it once in the outer call.
+        0x47 => {
+            let result = DefWindowProcW(h, m, w, l);
+            let dpi = GetDpiForWindow(h).max(96) as i32;
+            if dpi != s.dpi {
+                s.dpi = dpi;
+                s.apply_theme();
+            }
+            s.capture_geometry();
+            s.layout();
+            result
+        }
+        3 => {
+            s.capture_geometry();
+            0
+        }
         5 => {
+            s.capture_geometry();
             s.layout();
             0
         }
@@ -1195,10 +1398,12 @@ unsafe extern "system" fn wndproc(h: H, m: u32, w: usize, l: isize) -> isize {
             0
         }
         0x112 if w & 0xfff0 == 0xf060 => {
+            s.capture_geometry();
             DestroyWindow(h);
             0
         }
         0x10 => {
+            s.capture_geometry();
             DestroyWindow(h);
             0
         }
@@ -1297,10 +1502,59 @@ pub fn error(message: &str) {
         );
     }
 }
+fn default_window() -> Window {
+    Window {
+        x: 0,
+        y: 0,
+        width: 1200,
+        height: 760,
+        dpi: 96,
+        maximized: false,
+    }
+}
+unsafe fn monitor_area(monitor: H) -> Area {
+    let mut info: MonitorInfo = zeroed();
+    info.size = size_of::<MonitorInfo>() as u32;
+    let r = if GetMonitorInfoW(monitor, &mut info) != 0 {
+        info.work
+    } else {
+        let mut r = Rect {
+            left: 0,
+            top: 0,
+            right: 1200,
+            bottom: 800,
+        };
+        SystemParametersInfoW(0x30, 0, (&mut r as *mut Rect).cast(), 0);
+        r
+    };
+    Area {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    }
+}
 pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String> {
     unsafe {
+        // The override is for isolated automation; normal launches use per-user LocalAppData.
+        let settings_root = std::env::var_os("MARIA_VIEWER_SETTINGS_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("LOCALAPPDATA")
+                    .filter(|p| !p.is_empty())
+                    .map(|p| PathBuf::from(p).join("Maria").join("Viewers"))
+            });
+        let settings_file =
+            settings_root.and_then(|root| preferences::file_in(&root, adapter.title));
+        let (mut prefs, can_save, notice) = match settings_file.as_ref() {
+            Some(file) => match preferences::load(file) {
+                Ok(p) => (p, true, None),
+                Err(_) => (Preferences::default(), false, Some("Saved appearance could not be read. Defaults are in use; Help can reset appearance.".to_owned())),
+            },
+            None => (Preferences::default(), false, Some("Appearance cannot be remembered: the local settings folder is unavailable.".to_owned())),
+        };
         let mut initial = None;
-        let mut theme = 0;
+        let mut theme = THEMES.iter().position(|t| t.id == prefs.theme).unwrap_or(0);
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             if arg == "--theme" {
@@ -1348,15 +1602,26 @@ pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String
             ui: UnsafeCell::new(Ui::new(adapter, theme)),
         }));
         (*(*state).ui.get()).paint = &(*state).paint;
+        (*(*state).ui.get()).settings_file = settings_file;
+        (*(*state).ui.get()).can_save = can_save;
+        (*(*state).ui.get()).settings_notice = notice;
+        let saved = prefs.window.unwrap_or_else(default_window);
+        let rect = Rect {
+            left: saved.x,
+            top: saved.y,
+            right: saved.x.saturating_add(saved.width as i32),
+            bottom: saved.y.saturating_add(saved.height as i32),
+        };
+        let start = saved.fit(monitor_area(MonitorFromRect(&rect, 2)), saved.dpi);
         let h = CreateWindowExW(
             0x10000,
             class.as_ptr(),
             wide(adapter.title).as_ptr(),
-            0xcf0000 | 0x10000000,
-            0,
-            0,
-            1200,
-            760,
+            0xcf0000,
+            start.x,
+            start.y,
+            start.width as i32,
+            start.height as i32,
             0,
             0,
             instance,
@@ -1366,13 +1631,33 @@ pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String
             drop(Box::from_raw(state));
             return Err("Cannot create standalone window".into());
         }
+        (*state).busy.set(true);
+        let ui = &mut *(*state).ui.get();
+        let restored = saved.fit(
+            monitor_area(MonitorFromWindow(h, 2)),
+            GetDpiForWindow(h).max(96),
+        );
+        SetWindowPos(
+            h,
+            0,
+            restored.x,
+            restored.y,
+            restored.width as i32,
+            restored.height as i32,
+            0x14,
+        );
+        ui.geometry = Some(restored);
+        ui.layout();
+        ui.restoring = false;
+        (*state).busy.set(false);
         if let Some(path) = initial {
             (*state).busy.set(true);
             (*(*state).ui.get()).open_path(path);
             (*state).busy.set(false);
             RedrawWindow(h, ptr::null(), 0, 0x185);
         }
-        ShowWindow(h, 5);
+        ShowWindow(h, if saved.maximized { 3 } else { 5 });
+        SetFocus((*(*state).ui.get()).open);
         let mut msg: Msg = zeroed();
         loop {
             let result = GetMessageW(&mut msg, 0, 0, 0);
@@ -1391,6 +1676,8 @@ pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String
                     Some(101)
                 } else if msg.wparam == 0x0d && msg.hwnd == (*(*state).ui.get()).query {
                     Some(112)
+                } else if msg.wparam == 0x70 {
+                    Some(105)
                 } else if msg.wparam == 0x74 {
                     Some(102)
                 } else if msg.wparam == 0x1b {
@@ -1425,6 +1712,16 @@ pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String
         }
         for path in &s.font_files {
             RemoveFontResourceExW(path.as_ptr(), 0x10, ptr::null_mut());
+        }
+        // No live HWNDs remain. A failed save does not fail file viewing or alter source files.
+        if s.can_save {
+            if let Some(file) = &s.settings_file {
+                prefs.theme = THEMES[s.theme].id.to_owned();
+                prefs.window = s.geometry;
+                if let Err(e) = preferences::save(file, &prefs) {
+                    MessageBoxW(0, wide(&format!("Size and theme could not be saved. Your source files were not changed.\n\n{e}")).as_ptr(), wide("Appearance not saved").as_ptr(), 0x30);
+                }
+            }
         }
         Ok(())
     }
