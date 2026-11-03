@@ -13,7 +13,8 @@ Windows 10 1703+ is the provisional API baseline; native Windows acceptance is p
 Open one local file through Open, Ctrl+O, a single-file drop, or a quoted path
 argument. Each launch is independent; use another window for another file.
 F5 reloads, Esc cancels, Tab moves focus. Ctrl+F focuses search; Enter/Find applies it.
-Previous/Next browse source pages or continue the current search. Select a table row for its shown values
+Previous/Next browse source pages or continue the current search.
+Clear search returns to the first unfiltered page. Help / F1 explains the controls. Select a table row for its shown values
 in the inspector; Copy shown row / Ctrl+C with table focus copies only that display.
 Control characters are escaped in cells. A visible ellipsis means display truncation,
 not the complete original value. Copy does not evaluate formulas or execute links;
@@ -21,7 +22,9 @@ pasting untrusted text into other applications remains the recipient's responsib
 
 The theme selector changes Paper, Ink, PC-98, Doloris, Sumimi and Marigold on the
 loaded document. `--theme doloris` (or another lower-case ID) selects a launch theme.
-Theme choice is session-only in this slice. Buttons retain standard native HWNDs
+Theme and window appearance are remembered on normal close (see below).
+An explicit `--theme` overrides the saved theme for this launch and is saved on close.
+Buttons retain standard native HWNDs
 with generated theme faces via NM_CUSTOMDRAW (not BS_OWNERDRAW). Rest/hover/pressed,
 focus and disabled state remain distinct; no theme changes the command behavior.
 The 40 DIP button hit box includes reserved focus/shadow space around the material.
@@ -33,6 +36,43 @@ Paper/Ink use installed UI/mono fonts;
 PC-98 requests MS Gothic with Windows fallback. Uika designs privately load Cinzel,
 Outfit and JetBrains Mono from `fonts/`; their OFL texts are included. No font is
 installed globally and there are no runtime font downloads.
+
+## Remembered appearance and first use
+
+Each viewer remembers its own theme, normal window size/position, DPI and maximized
+state. Minimized windows never reopen minimized. Saved bounds are fitted to a current
+monitor's work area and scaled for its DPI, so removing a monitor does not strand
+state. Multiple windows use the last successfully saved appearance (normally
+the last window closed).
+Settings are saved atomically **after normal close**, not on crashes or forced kills.
+
+Per-user JSON locations (no installation-directory writes or administrator access):
+
+- `%LOCALAPPDATA%\Maria\Viewers\csv-viewer\desktop.json`
+- `%LOCALAPPDATA%\Maria\Viewers\parquet-viewer\desktop.json`
+
+Viewer preferences contain **appearance only**: no file paths, source data, search
+text or clipboard contents. No automatic file reopen is enabled. The native Open
+dialog requests that sources not be added to Windows Recent Documents; Windows may
+still manage its own dialog navigation state independently of viewer preferences.
+
+A fresh window gives Open/drop instructions and read-only guidance. Search has an
+explicit Clear search action and actionable no-match text; a bounded search with
+Next available is not reported as whole-file exhaustion. The empty/error state
+explains how to open another file or retry, while a failed page request keeps its
+previous page. Row inspection includes a selection prompt and coverage details.
+
+Invalid, oversized, unsupported-version or unreadable preferences do not prevent
+viewing. Defaults are used and the saved file is left untouched. **Help** then offers
+an explicit size/theme reset; **No** preserves the existing settings, **Yes** resets
+appearance and allows a fresh save on normal close. A write failure is reported
+without altering source files. If LocalAppData is unavailable, the viewer remains
+usable but warns that appearance cannot be remembered; it never falls back to the
+current/source directory.
+
+Native integration tests set `MARIA_VIEWER_SETTINGS_DIR` to a private test root.
+That override also keeps per-viewer subdirectories; it must not point at source data.
+`--check`, browsing helper processes and Explorer/COM do not load or save appearance.
 
 ## Browsing and resource limits
 
@@ -98,10 +138,15 @@ wine target/native-smoke.exe 'dist\standalone\csv-desktop.exe' 'crates\csv-core\
 
 The host verifies real worker values, standard Button identity, unique access keys,
 Tab focus, native Space activation, ready/busy/selection availability, BM_CLICK
-copy/cancel, six live themes, reload and exit. Add `--browse` after the expected
+copy/cancel, six live themes, reload and exit. It also launches fresh processes to
+check size/position/theme, maximize/restore, minimize recovery, explicit theme
+precedence, no automatic file reopen, Open-dialog cancellation, Help/F1, safe future
+settings fallback and consent-based repair. Preferences are isolated per smoke run.
+Add `--browse` after the expected
 first-cell argument with a 600-row paging fixture (needle.* at source row 451)
 to check live paging and search. `--find CSV "needle.*"` drives the real Find
-control for capture/testing. Capture helper modes `--probe`,
+control for capture/testing. `--size CSV 1040 660` (or `Parquet`) drives a real
+HWND resize; `--probe` reports native bounds and selected theme. Capture helper modes `--probe`,
 `--press`, `--release`, `--hover`, `--away`, `--next`, `--previous`, `--close` take `CSV` as the last argument. Press/release
 uses BM_SETSTATE for deterministic native pressed-paint captures, not a claim of
 physical pointer automation. Narrator/UIA and actual Windows forced-color/DPI
@@ -147,6 +192,12 @@ UserChoice or silently replace an existing default.
 - [ ] Check Open dialog, drag/drop, Tab/Shift+Tab, Enter/Space, access keys,
   cancellation and focus return. Check Narrator reads command names, table cells,
   selection, inspector and status updates meaningfully.
+- [ ] Change theme and window size/position, close normally and relaunch. Repeat
+  maximized and minimized; confirm normal restore bounds. Verify CSV/Parquet keep
+  independent preferences, including after moving the portable folder. Disconnect
+  a secondary monitor if available and confirm the window remains reachable.
+- [ ] Check first-open instructions, Help, a no-match search, Clear search and
+  invalid-file recovery without requiring a terminal or keyboard shortcuts.
 - [ ] Check all six themes at 100/150/200% scaling, move between monitors with
   different scaling if available, and enable a Windows contrast theme. Labels,
   focus and selection must remain readable; authored button colors should yield
