@@ -79,8 +79,8 @@ csv-desktop --check sample.csv
 
 `dist/standalone/` and `dist/csv-desktop-debug-windows.zip` are separate from the
 existing COM release payload. GNU builds are unsigned developer builds, not official
-MSVC releases. Windows SDK `rc.exe` is supported by the new build script but has
-not been exercised here. Existing CLI/DLL registration commands remain unchanged.
+MSVC releases. Windows SDK `rc.exe` and the MSVC native-control smoke have been
+exercised in Windows CI. Existing CLI/DLL registration commands remain unchanged.
 
 The vendored `crates/viewer-shell` source is version 0.1.0 with exact file hashes
 in `crates/viewer-shell/SOURCE.json`. It has no COM dependency or sibling checkout
@@ -105,6 +105,58 @@ physical pointer automation. Narrator/UIA and actual Windows forced-color/DPI
 acceptance are still separate requirements.
 
 ![Actual shared-shell Button HWNDs under Wine](images/native-controls.png)
+
+## Local Windows verification — Maria
+
+**Owner: Maria. Status: pending local verification.** Use an existing Windows 11
+Home or Pro desktop; Windows Enterprise, GitHub Enterprise and a paid testing
+service are not required. Standard GitHub Actions Windows runners are free for
+public repositories, but CI does not replace the desktop checks below.
+
+The Windows/MSVC CI build and native-control smoke have passed. The remaining
+checks concern the interactive Windows shell, accessibility and display behavior.
+
+### Default-app readiness
+
+The app accepts a quoted file argument. Wine GUI checks passed with spaces and
+Unicode in both the executable directory and input filename. This does not prove
+Windows Explorer/default-app activation.
+
+**Not implemented yet:** dedicated desktop ProgID/open-command registration,
+Open with / Default apps discovery and a register/unregister flow. Existing COM
+preview-handler registration is separate. Manually browsing to the EXE through
+Open with is the current local test route, not a verified integration feature.
+Windows must obtain the user's default-app choice through system UI; do not write
+UserChoice or silently replace an existing default.
+
+### Local checklist
+
+- [ ] Extract the entire portable build to a stable folder. Keep `csv-worker.exe`
+  beside `csv-desktop.exe`, and keep `fonts/` and licence files. Moving the folder later
+  can invalidate a file association.
+- [ ] Record the current default for `.csv`. For a small local test file,
+  use **Open with → Choose another app**, browse to `csv-desktop.exe`, and select
+  **Always** / **Always use this app** if offered (wording varies by Windows).
+- [ ] Double-click another `.csv` file after closing the app. Confirm the
+  right document/data appears, including paths containing spaces and Unicode.
+  Confirm the selection in **Settings → Apps → Default apps**. Restore the prior
+  default after testing if desired. A failure here remains an open issue.
+- [ ] Check Open dialog, drag/drop, Tab/Shift+Tab, Enter/Space, access keys,
+  cancellation and focus return. Check Narrator reads command names, table cells,
+  selection, inspector and status updates meaningfully.
+- [ ] Check all six themes at 100/150/200% scaling, move between monitors with
+  different scaling if available, and enable a Windows contrast theme. Labels,
+  focus and selection must remain readable; authored button colors should yield
+  to native rendering in forced colors. Check bundled-font loading/fallback.
+- [ ] Record Windows edition/build, app build/commit, theme/scaling, pass/fail
+  results and screenshots alongside this checklist. Leave untested items open.
+
+The current **64 MiB input limit** and bounded-sample limits still apply even
+when the viewer is selected as the default. Do not mark native acceptance complete
+from a successful build, Wine test or CI smoke alone.
+
+References: [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+and [Windows app defaults](https://learn.microsoft.com/en-us/windows/apps/develop/windows-integration/default-apps-platform).
 
 ## Acceptance still required
 
