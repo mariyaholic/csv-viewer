@@ -66,7 +66,10 @@ impl Navigation {
         self.history.len()
     }
     pub fn commit(&mut self, request: Request) {
-        if request.offset == 0 || request.query != self.current.query {
+        if request.offset == 0
+            || request.query != self.current.query
+            || request.expected != self.current.expected
+        {
             self.history.clear();
         } else if self
             .history

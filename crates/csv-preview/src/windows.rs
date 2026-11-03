@@ -1246,14 +1246,14 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
     }
     let waiting = session.clone();
     let window_value = window as usize;
-    if thread::Builder::new()
-        .name("csv-preview-scan-waiter".to_string())
-        .spawn(move || {
-            let _alive = crate::lifecycle::LiveThread::enter();
+    if crate::lifecycle::spawn(
+        thread::Builder::new().name("csv-preview-scan-waiter".to_string()),
+        move || {
             let _ = waiting.wait_for_scan(timeout + Duration::from_secs(1));
             PostMessageW(window_value as HWND, WM_APP_DONE, 0, 0);
-        })
-        .is_err()
+        },
+    )
+    .is_err()
     {
         // The scan itself keeps running inside the session; only the
         // completion ping would be missing, so the pane keeps the bounded

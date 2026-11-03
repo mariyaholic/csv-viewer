@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    mpsc::{sync_channel, Receiver, TryRecvError},
+    mpsc::{sync_channel, Receiver, SyncSender, TryRecvError},
     Arc, Mutex,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 pub type Inspect =
     fn(&mut File, &Path, &mut dyn Write, &mut dyn Read, &AtomicBool) -> Result<Table, String>;
 #[derive(Clone, Copy)]
@@ -106,13 +106,29 @@ mod windows_job {
     }
 }
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+struct ActiveSlot;
+impl Drop for ActiveSlot {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 pub const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+#[derive(PartialEq, Eq)]
+enum Phase {
+    Running,
+    Cancelled,
+    Delivered,
+}
+enum Signal {
+    Cancel,
+    Finished,
+}
 pub struct Task {
     rx: Receiver<Result<Table, String>>,
+    signal: SyncSender<Signal>,
     cancel: Arc<AtomicBool>,
     child: Arc<Mutex<Option<OwnedChild>>>,
-    started: Instant,
-    done: bool,
+    phase: Phase,
 }
 impl Task {
     pub fn start(adapter: Adapter, path: PathBuf, worker: PathBuf) -> Self {
@@ -141,6 +157,8 @@ impl Task {
         request: Option<crate::browse::Request>,
     ) -> Self {
         let (tx, rx) = sync_channel(1);
+        let (signal, deadline) = sync_channel(1);
+        let finished = signal.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let child = Arc::new(Mutex::new(None::<OwnedChild>));
         let flag = cancel.clone();
@@ -154,13 +172,13 @@ impl Task {
                 ));
                 return;
             }
-            let (finished, deadline) = sync_channel::<()>(1);
+            let slot = ActiveSlot;
             let timer_flag = flag.clone();
             let timer_child = process.clone();
             std::thread::spawn(move || {
                 if matches!(
                     deadline.recv_timeout(timeout),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    Ok(Signal::Cancel) | Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                 ) {
                     timer_flag.store(true, Ordering::SeqCst);
                     if let Some(child) = timer_child.lock().unwrap().as_mut() {
@@ -169,7 +187,7 @@ impl Task {
                 }
             });
             let spool = tempfile::Builder::new().prefix("viewer-desktop-").tempdir();
-            let result = match &spool {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &spool {
                 Ok(dir) => run(
                     adapter,
                     &path,
@@ -180,50 +198,67 @@ impl Task {
                     request.as_ref(),
                 ),
                 Err(e) => Err(format!("Cannot create private desktop spool: {e}")),
-            };
-            drop(finished);
+            }))
+            .unwrap_or_else(|_| Err("Worker task panicked; operation failed safely.".into()));
             if let Some(mut c) = process.lock().unwrap().take() {
                 let _ = c.kill();
                 let _ = c.wait();
             }
             drop(spool);
-            ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            drop(slot);
+            let _ = finished.try_send(Signal::Finished);
             let _ = tx.send(result);
         });
         Self {
             rx,
+            signal,
             cancel,
             child,
-            started: Instant::now(),
-            done: false,
+            phase: Phase::Running,
         }
     }
     pub fn cancel(&mut self) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        self.phase = Phase::Cancelled;
         self.cancel.store(true, Ordering::SeqCst);
-        if let Some(c) = self.child.lock().unwrap().as_mut() {
-            let _ = c.kill();
+        // The already-owned watchdog performs termination off the UI thread,
+        // even if CreateProcess currently holds the publication mutex.
+        let _ = self.signal.try_send(Signal::Cancel);
+        if let Ok(mut child) = self.child.try_lock() {
+            if let Some(child) = child.as_mut() {
+                let _ = child.kill();
+            }
         }
     }
     pub fn poll(&mut self) -> Option<Result<Table, String>> {
-        if self.done {
+        if self.phase == Phase::Delivered {
             return None;
         }
-        if self.started.elapsed() > Duration::from_secs(120) {
-            self.cancel();
-            self.done = true;
-            return Some(Err("Operation timed out after 120 s; worker terminated. Retry with a smaller local file.".into()));
+        if self.phase == Phase::Cancelled {
+            self.phase = Phase::Delivered;
+            return Some(Err("Cancelled".into()));
         }
-        match self.rx.try_recv() {
-            Ok(r) => {
-                self.done = true;
-                Some(r)
-            }
-            Err(TryRecvError::Disconnected) => {
-                self.done = true;
-                Some(Err("Worker task stopped unexpectedly".into()))
-            }
+        // Delivery time is not execution time: modal UI can defer polling.
+        let received = match self.rx.try_recv() {
+            Ok(r) => Some(r),
+            Err(TryRecvError::Disconnected) => Some(Err("Worker task stopped unexpectedly".into())),
             Err(TryRecvError::Empty) => None,
+        };
+        // The watchdog owns the execution deadline. A UI-local clock would
+        // incorrectly include scheduling and post-cleanup delivery latency.
+        if self.cancel.load(Ordering::SeqCst) {
+            self.cancel();
+            self.phase = Phase::Delivered;
+            return Some(Err(
+                "Operation timed out; worker terminated. Retry with a smaller local file.".into(),
+            ));
         }
+        if received.is_some() {
+            self.phase = Phase::Delivered;
+        }
+        received
     }
     pub fn wait(mut self) -> Result<Table, String> {
         loop {
@@ -381,7 +416,102 @@ pub fn copy_cancelled(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     static PROCESS_TESTS: Mutex<()> = Mutex::new(());
+    fn queued_task() -> Task {
+        let (tx, rx) = sync_channel(1);
+        tx.send(Ok(Table {
+            coverage: "finished in time".into(),
+            ..Table::default()
+        }))
+        .unwrap();
+        Task {
+            rx,
+            signal: sync_channel(1).0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            child: Arc::new(Mutex::new(None)),
+            phase: Phase::Running,
+        }
+    }
+    #[test]
+    fn completion_delivery_gap_is_not_a_new_execution_timeout() {
+        let mut task = queued_task();
+        let (tx, rx) = sync_channel(1);
+        task.rx = rx;
+        assert!(
+            task.poll().is_none(),
+            "a completed watchdog does not time out delivery latency"
+        );
+        tx.send(Ok(Table::default())).unwrap();
+        assert!(task.poll().unwrap().is_ok());
+    }
+    #[test]
+    fn completed_result_survives_delayed_ui_poll_after_modal_help() {
+        let mut task = queued_task();
+        assert_eq!(task.poll().unwrap().unwrap().coverage, "finished in time");
+        assert!(task.poll().is_none());
+    }
+    #[test]
+    fn explicit_cancel_invalidates_an_already_queued_success() {
+        let mut task = queued_task();
+        task.cancel();
+        assert!(task.poll().unwrap().is_err());
+        assert!(task.poll().is_none());
+    }
+    #[test]
+    fn cancel_does_not_block_the_ui_on_worker_publication_mutex() {
+        let mut task = queued_task();
+        let child = task.child.clone();
+        let guard = child.lock().unwrap();
+        let (tx, rx) = sync_channel(1);
+        let h = std::thread::spawn(move || {
+            task.cancel();
+            tx.send(()).unwrap();
+        });
+        let quick = rx.recv_timeout(Duration::from_millis(200)).is_ok();
+        drop(guard);
+        h.join().unwrap();
+        assert!(
+            quick,
+            "Cancel must not wait for CreateProcess/child ownership publication"
+        );
+    }
+    fn panicking_adapter(
+        _: &mut File,
+        _: &Path,
+        _: &mut dyn Write,
+        _: &mut dyn Read,
+        _: &AtomicBool,
+    ) -> Result<Table, String> {
+        panic!("adapter failed during transfer");
+    }
+    #[test]
+    fn adapter_panic_releases_operation_capacity_and_reaps_its_child() {
+        let _serial = PROCESS_TESTS.lock().unwrap();
+        let before = ACTIVE.load(Ordering::SeqCst);
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let task = Task::start(
+            Adapter {
+                title: "test",
+                worker: "shell",
+                csv_spool: false,
+                inspect: panicking_adapter,
+            },
+            f.path().into(),
+            blocking_worker(),
+        );
+        let process = task.child.clone();
+        assert!(task.wait().is_err());
+        let leaked = process.lock().unwrap().is_some();
+        // Explicit test cleanup on the broken baseline prevents an orphan shell.
+        if let Some(mut c) = process.lock().unwrap().take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        assert!(!leaked, "a terminal task must not leave a child behind");
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), before);
+    }
+
     fn wait_for_child(task: &Task) {
         let until = Instant::now() + Duration::from_secs(2);
         loop {
