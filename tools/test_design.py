@@ -50,6 +50,11 @@ class DesignContractTests(unittest.TestCase):
                        'Interaction grammar', 'Keep entered value; explain recovery'):
             self.assertNotIn(phrase, source)
 
+    def test_button_elevation_tokens_are_required(self):
+        self.data['semantic'].pop('control.highlight', None)
+        with self.assertRaises(ValueError):
+            validate(self.data)
+
     def test_missing_theme_is_rejected(self):
         del self.data['themes']['pc98']
         with self.assertRaises(ValueError):

@@ -6,6 +6,10 @@ the native adapter may retain OS buttons, selection, menus and forced colors.
 
 ## 1. Command bar
 
+Button conventions and theme materials: `BUTTONS.md`. The ordinary rest appearance
+is not the Enter-key default command. Primary emphasis, keyboard default, focus
+and toggled/pressed state are separate concepts.
+
 Order: **file → data operation → view → overflow**. Open/Reload/Cancel keep their
 current meanings. One prominent action per context; destructive commands never
 borrow the brand action appearance. Move low-frequency commands into a native

@@ -1,6 +1,6 @@
 # Viewer design system — six faces, one workbench
 
-Version 0.1.0. Design contract for CSV and Parquet desktop companions, not a claim
+Version 0.2.0. Design contract for CSV and Parquet desktop companions, not a claim
 that the future controls shown here already exist in the native applications.
 
 ## Direction card
@@ -50,8 +50,11 @@ then retire duplicated literals only after parity tests and native acceptance.
   Decorative dividers are exempt only if not needed to identify a control.
 - Motion: none in the grid; optional 120 ms UI feedback, 180 ms panel transitions.
   Reduced motion disables both. No pulsing loading skeleton or animated ticker.
-- Shadows are not required. Elevation is indicated by panel roles, a boundary and
-  focus ownership; native menus/dialogs retain OS chrome.
+- Buttons use a raised face, highlight, boundary and restrained 2 DIP contact
+  shadow; pressed buttons lose elevation and move 1 DIP into the face. Disabled
+  buttons lose depth, not their label. Native/forced-color controls may override
+  this authored material; native menus/dialogs retain OS chrome.
+- See `BUTTONS.md` for sourced conventions, materials and state behavior.
 
 ## Six identities without six layouts
 

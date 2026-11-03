@@ -60,20 +60,57 @@ def main():
         def box(rect, fill='surface.panel', border='border.control', width=1):
             draw.rectangle(rect, fill=c(fill), outline=c(border), width=width)
 
-        def button(x, y, width, label, state='default'):
-            fill = {'primary': 'action.fill', 'hover': 'surface.hover', 'pressed': 'surface.pressed'}.get(state, 'surface.panel')
-            box((x, y, x + width, y + 42), fill)
+        def button(x, y, width, label, state='default', primary=False, menu=False, split=False):
+            # Material changes never substitute for an accessible state/name.
+            radius = entry['button_material']['radius_dip']
+            disabled = state == 'disabled'
+            pressed = state == 'pressed'
+            offset = data['scale']['button_pressed_offset_dip'] if pressed else 0
+            elevation = 0 if disabled or pressed else data['scale']['button_elevation_dip']
+            fill = ('action.fill' if primary else
+                    {'hover': 'surface.control-hover', 'pressed': 'surface.control-pressed'}.get(state, 'surface.control'))
+            rect = (x, y + offset, x + width, y + 42 + offset)
+            if elevation:
+                draw.rounded_rectangle((x, y + elevation, x + width, y + 42 + elevation),
+                                       radius=radius, fill=c('control.shadow'))
+            draw.rounded_rectangle(rect, radius=radius, fill=c(fill), outline=c('border.control'))
+            if not disabled:
+                top = 'control.shadow' if pressed else 'control.highlight'
+                bottom = 'control.highlight' if pressed else 'control.shadow'
+                draw.line((x + radius + 2, y + offset + 2, x + width - radius - 2, y + offset + 2), fill=c(top))
+                draw.line((x + radius + 2, y + offset + 40, x + width - radius - 2, y + offset + 40), fill=c(bottom))
+                if entry['button_material']['profile'] == 'fine-frame':
+                    draw.rounded_rectangle((x + 3, y + offset + 3, x + width - 3, y + offset + 39),
+                                           radius=1, outline=c('control.highlight'))
+                if entry['button_material']['profile'] == 'warm-rim' and not pressed:
+                    draw.line((x + radius + 2, y + 38, x + width - radius - 2, y + 38), fill=c('control.highlight'))
+                if entry['button_material']['profile'] == 'hard-bevel':
+                    draw.line((x + 2, y + offset + 2, x + 2, y + offset + 39), fill=c(top))
+                    draw.line((x + width - 2, y + offset + 2, x + width - 2, y + offset + 39), fill=c(bottom))
             if state == 'focused':
-                draw.rectangle((x - 4, y - 4, x + width + 4, y + 46), outline=c('focus.ring'), width=2)
-            text(x + 12, y + 9, label, 'action.text' if state == 'primary' else ('text.secondary' if state == 'disabled' else 'text.primary'))
+                draw.rounded_rectangle((x - 4, y - 4, x + width + 4, y + 46), radius=radius + 3,
+                                       outline=c('focus.ring'), width=2)
+            foreground = c('text.secondary' if disabled else ('action.text' if primary else 'text.primary'))
+            trailing = 28 if menu or split else 0
+            bounds = draw.textbbox((0, 0), label, font=ui)
+            label_width = bounds[2] - bounds[0]
+            if label_width + trailing + 24 > width:
+                raise ValueError('Button label needs more room: ' + label)
+            draw.text((x + (width - trailing - label_width) / 2, y + 9 + offset), label, fill=foreground, font=ui)
+            if menu or split:
+                cx = x + width - 15
+                cy = y + 21 + offset
+                if split:
+                    draw.line((x + width - 31, y + 6, x + width - 31, y + 36), fill=c('border.control'))
+                draw.line((cx - 4, cy - 2, cx, cy + 2, cx + 4, cy - 2), fill=foreground, width=2)
 
         text(32, 20, 'Design specimen · illustrative data', 'text.secondary', small)
         text(32, 65, entry['name'], font=heading)
         draw.line((32, 151, 1468, 151), fill=c('ornament.trim'), width=2)
-        button(32, 174, 130, 'Open file', 'primary')
-        button(176, 174, 110, 'Reload')
-        button(300, 174, 190, 'Scan full file')
-        button(504, 174, 150, 'Export…', 'disabled')
+        button(32, 174, 142, 'Open file…')
+        button(188, 174, 120, 'Reload')
+        button(322, 174, 190, 'Scan full file')
+        button(526, 174, 150, 'Export', menu=True)
         text(32, 247, 'Find in shown sample', 'text.secondary', small)
         box((32, 278, 805, 324), 'surface.input')
         text(47, 290, 'Account begins with 001', font=code)
@@ -112,15 +149,18 @@ def main():
         text(48, 778, 'PARTIAL', 'status.warning')
         text(160, 778, 'Sample search only.')
         text(32, 852, 'Control states', 'text.secondary')
-        for x, width, label, state in [(32, 132, 'Default', 'default'), (184, 130, 'Hover', 'hover'),
+        for x, width, label, state in [(32, 132, 'Rest', 'default'), (184, 130, 'Hover', 'hover'),
                                        (334, 132, 'Pressed', 'pressed'), (486, 132, 'Focus', 'focused'),
                                        (638, 150, 'Disabled', 'disabled')]:
             button(x, 894, width, label, state)
-        text(825, 896, 'Error: invalid filter', 'status.error')
-        text(825, 926, 'Check field and operator.', 'text.secondary', small)
-        text(32, 973, 'SUCCESS · scan verified', 'status.success')
-        text(400, 973, 'INFO · metadata unverified', 'text.info')
-        text(855, 973, 'CANCELLED · previous result', 'text.secondary')
+        button(810, 894, 140, 'Primary', primary=True)
+        button(974, 894, 175, 'Scanning', state='busy')
+        text(1180, 896, 'Invalid filter', 'status.error')
+        button(810, 957, 140, 'Copy', split=True)
+        button(974, 957, 175, 'Cancel')
+        text(32, 1040, 'SUCCESS · scan verified', 'status.success')
+        text(400, 1040, 'INFO · metadata unverified', 'text.info')
+        text(855, 1040, 'CANCELLED · previous result', 'text.secondary')
         path = args.output / ('components-' + theme + '.png')
         im.save(path)
         plates.append(im)
