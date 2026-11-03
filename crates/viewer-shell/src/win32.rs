@@ -369,13 +369,12 @@ struct Ui {
     next: H,
     find_label: H,
     navigation: Navigation,
-    pending: Option<Request>,
     paint: *const Cell<Paint>,
     dirty: bool,
     adapter: Adapter,
     doc: Document,
     path: Option<PathBuf>,
-    task: Option<(u64, Task)>,
+    task: Option<(u64, Request, Task)>,
     theme: usize,
     dpi: i32,
     window: H,
@@ -418,7 +417,6 @@ impl Ui {
             next: 0,
             find_label: 0,
             navigation: Navigation::default(),
-            pending: None,
             paint: ptr::null(),
             dirty: true,
             adapter,
@@ -858,8 +856,11 @@ impl Ui {
             "Reading/searching from source row {}; Cancel available",
             request.offset.saturating_add(1)
         );
-        self.pending = Some(request.clone());
-        self.task = Some((generation, Task::browse(self.adapter, path, request)));
+        self.task = Some((
+            generation,
+            request.clone(),
+            Task::browse(self.adapter, path, request),
+        ));
         self.refresh_status();
     }
     unsafe fn refresh_status(&mut self) {
@@ -960,8 +961,8 @@ impl Ui {
         let result = self
             .task
             .as_mut()
-            .and_then(|(g, t)| t.poll().map(|r| (*g, r)));
-        if let Some((g, r)) = result {
+            .and_then(|(g, request, t)| t.poll().map(|r| (*g, request.clone(), r)));
+        if let Some((g, mut request, r)) = result {
             self.task.take();
             let success = r.is_ok();
             let r = r.map_err(|e| {
@@ -976,7 +977,7 @@ impl Ui {
                 )
             });
             if self.doc.finish(g, r) && success {
-                if let Some(mut request) = self.pending.take() {
+                {
                     request.expected = self
                         .doc
                         .table
@@ -1116,7 +1117,7 @@ impl Ui {
             }
             103 if self.task.is_some() => {
                 self.task.take();
-                self.doc.begin();
+                self.doc.cancel();
                 self.doc.status = "Cancelled. Previous preview, if any, remains visible.".into();
                 self.refresh_status();
             }

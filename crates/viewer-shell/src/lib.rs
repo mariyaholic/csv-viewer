@@ -169,6 +169,7 @@ pub mod supervisor;
 pub mod win32;
 #[derive(Default)]
 pub struct Document {
+    pending_generation: Option<u64>,
     pub generation: u64,
     pub table: Option<Table>,
     pub status: String,
@@ -176,13 +177,20 @@ pub struct Document {
 impl Document {
     pub fn begin(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
+        self.pending_generation = Some(self.generation);
         self.status = "Opening: transfer / inspect (up to 120 s)".into();
         self.generation
     }
+    pub fn cancel(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.pending_generation = None;
+        self.status = "Cancelled.".into();
+    }
     pub fn finish(&mut self, generation: u64, result: Result<Table, String>) -> bool {
-        if generation != self.generation {
+        if self.pending_generation != Some(generation) {
             return false;
         }
+        self.pending_generation = None;
         match result {
             Ok(t) => {
                 let t = t.bounded();

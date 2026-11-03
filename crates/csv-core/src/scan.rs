@@ -643,10 +643,11 @@ impl<'a, R: Read> QuoteGuard<'a, R> {
                 }
             }
             QuoteState::Quoted => {
-                if Some(byte) == self.escape {
-                    self.state = QuoteState::Escaped;
-                } else if byte == self.quote {
+                // csv-core recognizes the quote before an equal escape byte.
+                if byte == self.quote {
                     self.state = QuoteState::QuoteClosed;
+                } else if Some(byte) == self.escape {
+                    self.state = QuoteState::Escaped;
                 }
             }
             QuoteState::QuoteClosed => {
@@ -1267,6 +1268,21 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn quote_guard_agrees_with_csv_parser_when_escape_equals_quote() {
+        let mut request = ScanRequest::full();
+        request.dialect = DialectChoice::Explicit(Dialect {
+            escape: Some('"'),
+            ..Dialect::default()
+        });
+        let report = scan_text("name,value\n\"ok\",1\n", &request);
+        assert_eq!(report.preview_rows[0].cells[0], "ok");
+        assert!(
+            report.complete,
+            "a complete parse must not be relabelled malformed by the guard: {:?}",
+            report.incomplete_reason
+        );
+    }
     #[test]
     fn complete_scan_has_exact_total() {
         let report = scan_text("a,b\n1,2\n3,4\n", &ScanRequest::full());
