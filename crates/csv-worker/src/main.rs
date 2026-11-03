@@ -598,3 +598,34 @@ mod tests {
         assert!(!control.flag.load(Ordering::SeqCst));
     }
 }
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    #[test]
+    fn cancelling_an_old_request_cannot_poison_the_next_request() {
+        let control = Arc::new(Control::default());
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let other = control.clone();
+        let bg = gate.clone();
+        let t = thread::spawn(move || {
+            for _ in 0..20000 {
+                bg.wait();
+                other.cancel(1);
+                bg.wait();
+            }
+        });
+        let mut bad = false;
+        for _ in 0..20000 {
+            control.begin(1);
+            gate.wait();
+            control.end();
+            control.begin(2);
+            gate.wait();
+            bad |= control.flag.load(Ordering::Relaxed);
+            control.end();
+        }
+        t.join().unwrap();
+        assert!(!bad, "late cancel for request 1 must not cancel request 2");
+    }
+}

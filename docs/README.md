@@ -19,3 +19,7 @@ The desktop app is not the terminal viewer or Explorer preview; their commands a
 - Repository status: [STATUS.md](../STATUS.md). Deferred work: [ROADMAP.md](../ROADMAP.md).
 
 Windows Explorer, default-app chooser, Narrator/UIA and real display acceptance remain owner checks, not implications of passing CI.
+
+## Runtime state and debugging
+
+- [State-machine inventory, invariants and regression coverage](STATE-MACHINES.md)
