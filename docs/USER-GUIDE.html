@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>CSV Viewer user guide</title><style>:root{--bg:#f2ede2;--panel:#fffdf8;--text:#241f18;--muted:#6f665b;--accent:#8a6a20;--border:#d9cfae;--space:8px;--radius:4px;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#060509;--panel:#0b0913;--text:#e9e4da;--muted:#aba3ad;--accent:#d8b878;--border:#2e2440;color-scheme:dark}}
+*{box-sizing:border-box}html{scroll-padding-top:24px}
+body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 "Segoe UI",sans-serif}
+a{color:var(--accent);text-underline-offset:3px}a:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+.mobile-toc{display:none}
+.layout{display:grid;grid-template-columns:240px minmax(0,1fr);max-width:1200px;margin:auto}
+nav{padding:32px 24px;align-self:start;position:sticky;top:0;max-height:100vh;overflow:auto;border-right:1px solid var(--border)}
+nav h2{font-size:17px;margin:0 0 16px}nav ul{list-style:none;margin:0;padding:0}nav li{margin:0 0 12px}
+main{max-width:78ch;padding:40px 48px 80px;background:var(--panel);min-width:0}
+h1{font-size:2.15rem;line-height:1.2;margin:0 0 24px;font-weight:650}
+h2{font-size:1.45rem;line-height:1.3;margin:48px 0 16px;border-top:1px solid var(--border);padding-top:24px}
+h3{font-size:1.1rem;margin:28px 0 8px}p{margin:0 0 20px}li{margin-bottom:10px}ul,ol{padding-left:24px}
+code{font:0.9em Consolas,"Liberation Mono",monospace;overflow-wrap:anywhere}pre{padding:16px;border:1px solid var(--border);border-radius:var(--radius);white-space:pre-wrap;overflow-wrap:anywhere}
+.skip{position:absolute;left:8px;top:-80px;padding:8px;background:var(--panel)}.skip:focus{top:8px}
+@media(max-width:900px){.layout{display:block}.desktop-toc{display:none}.mobile-toc{display:block;padding:16px 24px;border-bottom:1px solid var(--border)}.mobile-toc summary{font-weight:650;cursor:pointer}nav{position:static;max-height:none;border:0;border-bottom:1px solid var(--border)}nav ul{columns:2}main{padding:28px 24px;max-width:none}}
+@media(max-width:450px){nav ul{columns:1}main{padding:24px 18px}h1{font-size:1.8rem}}
+@media print{body{background:white;color:black;font-size:11pt}nav,.skip{display:none}.layout{display:block}main{padding:0;background:white;max-width:none}h2{break-after:avoid}pre{break-inside:avoid}}
+</style></head>
+<body><a class="skip" href="#guide">Skip to guide</a><div class="layout"><nav class="desktop-toc" aria-label="Guide sections"><h2>In this guide</h2><ul><li><a href="#start-here">Start here</a></li><li><a href="#open-a-file">Open a file</a></li><li><a href="#browse-rows-and-inspect-values">Browse rows and inspect values</a></li><li><a href="#find-text">Find text</a></li><li><a href="#copy-a-row-safely">Copy a row safely</a></li><li><a href="#remember-theme-and-window-size">Remember theme and window size</a></li><li><a href="#help-without-an-internet-connection">Help without an internet connection</a></li><li><a href="#keyboard-shortcuts">Keyboard shortcuts</a></li><li><a href="#fix-a-problem">Fix a problem</a></li><li><a href="#desktop-terminal-and-explorer-are-different">Desktop, terminal and Explorer are different</a></li><li><a href="#limits-and-privacy">Limits and privacy</a></li><li><a href="#report-a-problem-without-sharing-private-data">Report a problem without sharing private data</a></li></ul></nav><details class="mobile-toc"><summary>In this guide</summary><nav aria-label="Guide sections"><ul><li><a href="#start-here">Start here</a></li><li><a href="#open-a-file">Open a file</a></li><li><a href="#browse-rows-and-inspect-values">Browse rows and inspect values</a></li><li><a href="#find-text">Find text</a></li><li><a href="#copy-a-row-safely">Copy a row safely</a></li><li><a href="#remember-theme-and-window-size">Remember theme and window size</a></li><li><a href="#help-without-an-internet-connection">Help without an internet connection</a></li><li><a href="#keyboard-shortcuts">Keyboard shortcuts</a></li><li><a href="#fix-a-problem">Fix a problem</a></li><li><a href="#desktop-terminal-and-explorer-are-different">Desktop, terminal and Explorer are different</a></li><li><a href="#limits-and-privacy">Limits and privacy</a></li><li><a href="#report-a-problem-without-sharing-private-data">Report a problem without sharing private data</a></li></ul></nav></details><main id="guide"><h1 id="csv-viewer-user-guide">CSV Viewer user guide</h1>
+<p>Made by Maria. Free and open source (Apache-2.0).</p>
+<h2 id="start-here">Start here</h2>
+<p>Use this desktop app to inspect a local CSV file without changing it. You do not need a terminal, administrator access or Explorer preview registration. This is a read-only viewer, not a spreadsheet editor.</p>
+<ol>
+<li>Extract the entire portable ZIP to a folder you can keep.</li>
+<li>Open <code>csv-desktop.exe</code> inside the extracted folder.</li>
+<li>Choose <strong>Open file…</strong>, select a local file, then choose Open in the file picker.</li>
+<li>Select a row to see its displayed values on the right.</li>
+</ol>
+<p>Keep <code>csv-worker.exe</code>, the <code>fonts</code> folder, the <code>help</code> folder and licence files with the app. Do not run only the EXE from inside the ZIP. Developer builds are unsigned. Windows may warn about an unsigned download; verify its source and follow your device or organisation&#x27;s security policy. Do not disable protection to run an unknown copy.</p>
+<h2 id="open-a-file">Open a file</h2>
+<p>Choose <strong>Open file…</strong>, press Ctrl+O, or drop one file into the window. Open another app window to inspect another file. Opening a different file clears the previous search. Opening and browsing do not write to your source file.</p>
+<p>The filename in the heading and window title identifies the current file. If a file is still being written by another program, wait for that program to finish, then use <strong>Reload</strong>. For a stable comparison, export a separate local copy from that program first.</p>
+<h2 id="browse-rows-and-inspect-values">Browse rows and inspect values</h2>
+<p><strong>Next</strong> reads the next page. <strong>Previous</strong> revisits a successful page you already saw. A page contains up to <strong>200 rows</strong> and the first <strong>64 columns</strong>. Text limits can make a page smaller. The table is not a view of every row loaded into memory.</p>
+<p>Select a row for the values shown in the right-hand inspector. Read the source-row label and checked range before interpreting a result. CSV source rows count data records after the detected header, not physical lines; a quoted multiline record is one row. Parquet row totals reported by metadata are unverified, not an independent count of decoded rows.</p>
+<h2 id="find-text">Find text</h2>
+<ol>
+<li>Click <strong>Search text</strong> or press Ctrl+F.</li>
+<li>Type the text to find, then choose <strong>Find</strong> or press Enter in that field.</li>
+<li>Read the checked range in the status and file details.</li>
+<li>If <strong>Next</strong> is available, choose it to continue the search.</li>
+<li>Choose <strong>Clear search</strong> to return to the first unfiltered page.</li>
+</ol>
+<p>Find starts at the beginning and ignores letter case. It matches literal text: <code>needle.*</code> means those characters, not a regular expression. Only the first 64 columns are searched. This is not SQL, sorting or a full-file index. A no-match page with Next available does not mean the entire file has no matches. An exhausted checked range does not prove absence from excluded columns or unrendered values.</p>
+<p>CSV searches decoded field text within its parser limits, including text longer than the shorter display limit. Parquet searches bounded rendered values, not unrendered nested/binary content or shortened string tails. F5 reloads from the beginning with the applied search. Cancel stops an active read; it does not clear the filter.</p>
+<h2 id="copy-a-row-safely">Copy a row safely</h2>
+<ol>
+<li>Select a row in the table.</li>
+<li>Choose <strong>Copy shown row</strong>, or press Ctrl+C while the table has focus.</li>
+<li>Paste into the application you intend to use.</li>
+</ol>
+<p>Copy includes displayed values only. An ellipsis (<code>…</code>) means text was shortened; it is not the complete original value. Control characters are escaped. Use the source application&#x27;s export tools when you need complete original values. Ctrl+C inside Search text copies selected search text instead of a table row. The viewer does not execute formulas or links. A spreadsheet or another recipient may interpret pasted untrusted text differently.</p>
+<h2 id="remember-theme-and-window-size">Remember theme and window size</h2>
+<p>Choose <strong>Theme</strong>, move or resize the window, then use <strong>normal close</strong> to save appearance. The six choices are Paper, Ink, PC-98, Doloris, Sumimi and Marigold. They do not change the data or search behavior. Each viewer saves its own theme, normal size/position and maximized state. A minimized window reopens normally. Saved bounds are fitted to the current monitor work area. With several windows, the last successfully saved appearance wins. Crashes, forced termination and a failed save do not save your latest changes.</p>
+<p>Settings contain appearance only: no source file paths, searches, data or clipboard contents. The app does not automatically reopen your last file. Windows may maintain its own file-picker navigation state separately. The settings location is <code>%LOCALAPPDATA%\Maria\Viewers\csv-viewer\desktop.json</code>. Moving the portable folder does not move those per-user preferences.</p>
+<p>If saved appearance cannot be read, the app uses defaults and preserves the existing settings. Press <strong>F1</strong> for a reset prompt. <strong>No</strong> keeps the old settings; <strong>Yes</strong> resets only appearance and enables a fresh save on normal close. Do not delete or edit your source file to repair appearance.</p>
+<h2 id="help-without-an-internet-connection">Help without an internet connection</h2>
+<p>Choose <strong>Help</strong> for Quick help, Offline user guide, Browsing/search/copying, Appearance/settings, Keyboard shortcuts, Troubleshooting or About. F1 opens the compact quick reference directly. About contains the author and licence information. The offline user guide opens <code>help/index.html</code> beside the EXE in your default browser. It has no scripts, external fonts or network resources. If no browser is configured, open that file manually in an installed browser. The guide does not send your source file to the browser. Use the browser&#x27;s Find or Print commands to search or print the guide.</p>
+<h2 id="keyboard-shortcuts">Keyboard shortcuts</h2>
+<ul>
+<li>Ctrl+O: Open file.</li>
+<li>Ctrl+F: Focus and select Search text.</li>
+<li>Enter in Search text: Find from the beginning.</li>
+<li>F5: Reload with the applied search.</li>
+<li>Esc: Cancel an active read.</li>
+<li>F1: Quick help.</li>
+<li>Tab and Shift+Tab: Move between controls.</li>
+<li>Space on a focused button: Activate it.</li>
+<li>Alt plus an underlined letter: Use that control&#x27;s access key.</li>
+<li>Ctrl+C with table focus: Copy the selected shown row.</li>
+<li>Ctrl+C in Search text: Copy the selected search text.</li>
+</ul>
+<h2 id="fix-a-problem">Fix a problem</h2>
+<h3 id="the-file-will-not-open">The file will not open</h3>
+<p>Check that it is a readable local regular file of the right format and that extraction is complete. Use <strong>Open file…</strong> to choose another file. Use <strong>Reload</strong> after an ordinary source-file change. A different filename extension does not convert a file&#x27;s format. CSV encoding, delimiter and header inference can be wrong for unusual input; the desktop app has no override controls yet. Re-export from your data tool or use the existing CSV terminal tools.</p>
+<h3 id="no-matches-or-fewer-rows-than-expected">No matches or fewer rows than expected</h3>
+<p>Check for an active search, the source-row label and the checked range. Use <strong>Next</strong> to continue an unfinished search, or <strong>Clear search</strong> to browse normally. Only 64 columns and bounded values are shown or searched. A page or a Parquet metadata count is not full-file validation.</p>
+<h3 id="reading-is-slow-cancelled-or-stopped-by-a-limit">Reading is slow, cancelled or stopped by a limit</h3>
+<p>Choose <strong>Cancel</strong>. A previous page is kept when available; the status tells you whether reading stopped. Choose <strong>Reload</strong> to start again with the current filter, or <strong>Open file…</strong> for another file. Limits protect the app, and can stop reading before the file ends. Cancellation cannot guarantee immediate return from an OS-blocked filesystem read. Later UTF-16 or Windows-1252 CSV pages may hit the time limit while replaying earlier records.</p>
+<h3 id="appearance-is-not-remembered">Appearance is not remembered</h3>
+<p>Close normally and reopen. Check whether another window closed later or an explicit launch theme replaced the saved choice. Read any appearance warning. If settings cannot be read, press F1 and choose whether to reset them. If the local settings folder is unavailable or unwritable, viewing still works but appearance cannot be saved there. The app does not write preferences beside your data as a fallback.</p>
+<h3 id="the-offline-guide-is-missing">The offline guide is missing</h3>
+<p>Extract the entire portable ZIP again, including <code>help/index.html</code>, into a complete folder. Help uses the EXE&#x27;s folder, not the working directory or source-file folder. Open the HTML file directly if Windows has no suitable default browser.</p>
+<h2 id="desktop-terminal-and-explorer-are-different">Desktop, terminal and Explorer are different</h2>
+<p>This guide describes <code>csv-desktop.exe</code> and its paged desktop interface. The existing terminal viewer, desktop <code>--check</code> diagnostic mode and Explorer preview have separate commands and limits. Do not apply terminal full-scan switches or CSV dialect overrides to the desktop GUI. The desktop <code>--check</code> path retains its <strong>64 MiB</strong> input cap and matched companion worker. It is not the same as GUI browsing. Explorer preview registration is opt-in and is not default-app registration. Dedicated desktop Open with / Default apps registration is not implemented. Ordinary launching does not change your associations or defaults.</p>
+<h2 id="limits-and-privacy">Limits and privacy</h2>
+<ul>
+<li>GUI source caps are <strong>4 GiB</strong> for CSV and <strong>16 GiB</strong> for Parquet. These are limits, not a promise that every file below them can be decoded or was stress-tested.</li>
+<li>Each page shows up to 200 rows and 64 columns. Shown cells are limited to 4 KiB, display text to 8 MiB and metadata to 128 KiB.</li>
+<li>Format, record, decode and time limits can stop a read earlier. A partial result is not a complete validation.</li>
+<li>The GUI opens sources read-only in a helper process. It does not upload files, make network requests for data, install fonts globally or send telemetry.</li>
+<li>The helper has your normal read permissions; it is not a new low-integrity sandbox.</li>
+<li>There is no full-file editing or sorting. Displayed or copied values may be shortened.</li>
+</ul>
+<p>Native Windows accessibility, real multi-monitor/DPI behavior, high contrast, default-app interaction and signed release packaging still require separate acceptance. Standard controls, Wine tests or CI do not certify those behaviors.</p>
+<h2 id="report-a-problem-without-sharing-private-data">Report a problem without sharing private data</h2>
+<p>Record the build or commit, Windows version, action taken, complete error message and shown coverage. Say whether the problem occurs in the desktop app, terminal viewer or Explorer preview. Use a small synthetic example when possible. Do not attach personal source data, credentials or private clipboard contents. The repository&#x27;s documentation index links developer testing notes and the remaining owner checklist.</p></main></div></body></html>

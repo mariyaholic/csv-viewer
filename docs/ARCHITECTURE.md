@@ -1,11 +1,16 @@
 # CSV viewer and preview
 
-## Proposed standalone desktop companion
+## Standalone desktop companion — implemented
 
-See [Standalone architecture](STANDALONE-ARCHITECTURE.md) for the owner-requested
-GUI proposal: no COM dependency, shared native presentation, separate worker-backed
-format adapters and staged acceptance gates. This is design work, not a shipped GUI.
-The proposal extends companion scope; existing Explorer security gates remain unchanged.
+The portable Windows desktop companion now uses a shared native shell and
+worker-backed format adapter without requiring COM registration. See the
+[user guide](USER-GUIDE.md), [standalone architecture](STANDALONE-ARCHITECTURE.md)
+and [current status](../STATUS.md) for delivered behavior and remaining acceptance.
+
+The original Explorer/CLI research and proposed scope below are retained as
+historical design notes, not a current feature inventory. Their machine-local
+evidence links are not portable download links. The later desktop companion
+extends that original scope; Explorer security gates remain unchanged.
 
 ## Six fields
 
