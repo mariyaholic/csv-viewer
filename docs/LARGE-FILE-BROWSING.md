@@ -86,3 +86,9 @@ Wine evidence is not normal Windows desktop acceptance. Maria's existing local
 checklist for Explorer/default apps, Narrator/UIA, DPI/monitor/high-contrast and
 physical interaction remains pending. Source caps are limits, not a claim that
 4 GiB/16 GiB inputs, every encoding, or adversarial files were exhaustively tested.
+
+Native harness note: edit controls in another process require direct
+`WM_SETTEXT`/`WM_GETTEXT` messages. `SetWindowTextW` is not supported for that
+purpose on Windows even though Wine accepted it. The harness now verifies the
+actual query contents before checking search results; coverage is not bypassed.
+[Microsoft API contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowtextw).

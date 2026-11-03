@@ -11,6 +11,13 @@
 #include <wchar.h>
 #include <wctype.h>
 static int fail(const char *what){fprintf(stderr,"FAIL: %s (Win32 %lu)\n",what,GetLastError());return 1;}
+// SetWindowText cannot edit another process's controls on Windows. Wine is
+// more permissive; use system-marshalled messages and verify the actual content.
+static int set_query(HWND h,const wchar_t *value){
+ HWND edit=GetDlgItem(h,111);wchar_t text[1025]={0};
+ if(!SendMessageW(edit,WM_SETTEXT,0,(LPARAM)value))return 0;
+ SendMessageW(edit,WM_GETTEXT,1025,(LPARAM)text);return wcscmp(text,value)==0;
+}
 static int ready(HWND h){for(int i=0;i<1000;i++){if(IsWindowEnabled(GetDlgItem(h,102)))return 1;Sleep(20);}return 0;}
 static int source_row(HWND h,DWORD pid,const wchar_t *wanted){
  HWND table=GetDlgItem(h,109);LVITEMW row={0};row.state=LVIS_SELECTED|LVIS_FOCUSED;row.stateMask=row.state;
@@ -24,7 +31,7 @@ static int source_row(HWND h,DWORD pid,const wchar_t *wanted){
 int wmain(int argc,wchar_t **argv){
  if(argc==4 && !wcscmp(argv[1],L"--find")){
   wchar_t klass[128];swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
-  SetWindowTextW(GetDlgItem(h,111),argv[3]);SendMessageW(GetDlgItem(h,112),BM_CLICK,0,0);return 0;
+  if(!set_query(h,argv[3]))return fail("search edit content roundtrip");SendMessageW(GetDlgItem(h,112),BM_CLICK,0,0);return 0;
  }
  if(argc==3 && (!wcscmp(argv[1],L"--probe")||!wcscmp(argv[1],L"--close")||!wcscmp(argv[1],L"--press")||!wcscmp(argv[1],L"--release")||!wcscmp(argv[1],L"--hover")||!wcscmp(argv[1],L"--away")||!wcscmp(argv[1],L"--next")||!wcscmp(argv[1],L"--previous"))){
   wchar_t klass[128];swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
@@ -107,15 +114,15 @@ int wmain(int argc,wchar_t **argv){
  SendMessageW(copy,BM_CLICK,0,0);if(OpenClipboard(h)){HANDLE data=GetClipboardData(CF_UNICODETEXT);if(!data)return fail("copy shown row");const wchar_t *s=GlobalLock(data);int contains=s&&wcsstr(s,first)!=0;if(s)GlobalUnlock(data);CloseClipboard();if(!contains)return fail("clipboard data preserves shown first value");}else return fail("clipboard open");
  puts("PASS: select row and copy actual shown values");
  if(argc>6 && !wcscmp(argv[6],L"--browse")){
-  HWND next=GetDlgItem(h,114),previous=GetDlgItem(h,113),query=GetDlgItem(h,111),find=GetDlgItem(h,112);
+  HWND next=GetDlgItem(h,114),previous=GetDlgItem(h,113),find=GetDlgItem(h,112);
   if(!IsWindowEnabled(next)||IsWindowEnabled(previous))return fail("initial page availability");
   SendMessageW(next,BM_CLICK,0,0);if(!ready(h)||!source_row(h,pi.dwProcessId,L"source row 201)"))return fail("real next page source rows");
   SendMessageW(previous,BM_CLICK,0,0);if(!ready(h)||!source_row(h,pi.dwProcessId,L"source row 1)"))return fail("real previous page");
-  SetWindowTextW(query,L"needle.*");SendMessageW(find,BM_CLICK,0,0);
+  if(!set_query(h,L"needle.*"))return fail("search edit content roundtrip");SendMessageW(find,BM_CLICK,0,0);
   if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=1||!source_row(h,pi.dwProcessId,L"source row 451)"))return fail("global literal search beyond first page");
-  SetWindowTextW(query,L"definitely absent literal.*");SendMessageW(find,BM_CLICK,0,0);
+  if(!set_query(h,L"definitely absent literal.*"))return fail("search edit content roundtrip");SendMessageW(find,BM_CLICK,0,0);
   if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=0||IsWindowEnabled(next))return fail("search exhaustion, not false matches");
-  SetWindowTextW(query,L"");SendMessageW(find,BM_CLICK,0,0);if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=200)return fail("clear search returns first page");
+  if(!set_query(h,L""))return fail("search edit content roundtrip");SendMessageW(find,BM_CLICK,0,0);if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=200)return fail("clear search returns first page");
   puts("PASS: native next/previous, source row numbers, global literal search beyond row 200 and clear/no-match behavior");
  }
  // Reload and Cancel are recoverable; a further reload must repopulate.
