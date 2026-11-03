@@ -1,0 +1,21 @@
+{
+  "version": "0.1.0",
+  "origin": "csv-viewer / feat/standalone-viewer (local source snapshot)",
+  "revision_kind": "sha256 content pin; not a published upstream release",
+  "files": {
+    "Cargo.toml": "39b587efc21db59173230458b44f282fe1aa825544a116df995fb09ea6dfea16",
+    "build.rs": "a86580375d238bea69d67cc76020650298cca1a723ead4208d8d615cf9381009",
+    "src/buttons.rs": "449b3919db7832860812bd8d37d0267b7e31fdb6403a5493b4f5b723b85d9feb",
+    "src/lib.rs": "fd3c90342fb813f83de1f8d73541828be9263db36d9afb6ddd78d67e68b5153d",
+    "src/supervisor.rs": "006609c7ec5feb2050112f7c96a9095056d4620ce56daf9a2151da91b4550b34",
+    "src/win32.rs": "ca932a14ca7d4f4ab3803474277520c79522bc2a2778e8d10eb0e42a48d37906",
+    "tests/button_material.rs": "13ca48c5162bf3cf5ca14e54e2e312e434634c625dd2022b481b83c3c6f89837",
+    "tests/native-smoke.c": "3c0c27f0422786e4e45089e1db0dd7b42fb090da00745403ad80fa59f58372d1"
+  },
+  "sync_policy": "Review changes in both repos; update this identical manifest only after byte-for-byte synchronization.",
+  "design_contract": {
+    "path": "design/system/tokens.json",
+    "sha256": "0c6d0b0e7fe70021dd9e0991a72fcfbf82658bbb9074c775e306e60b2f0ddd50",
+    "binding": "build.rs generates buttons.rs into OUT_DIR; no JSON parsing at runtime"
+  }
+}

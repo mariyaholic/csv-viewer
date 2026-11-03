@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/viewer-shell",
+    "crates/csv-desktop",
     "crates/csv-core",
     "crates/csv-protocol",
     "crates/csv-worker",
