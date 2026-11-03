@@ -42,6 +42,14 @@ class DesignContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(self.data)
 
+    def test_specimen_has_no_taglines_or_instructional_filler(self):
+        source = (ROOT / 'tools/render_design.py').read_text()
+        for phrase in ('The data workbench', 'A different material finish',
+                       'Future command anatomy', 'Scope is never implied by color',
+                       'Leading zeros stay intact', 'Copy action names its representation',
+                       'Interaction grammar', 'Keep entered value; explain recovery'):
+            self.assertNotIn(phrase, source)
+
     def test_missing_theme_is_rejected(self):
         del self.data['themes']['pc98']
         with self.assertRaises(ValueError):
