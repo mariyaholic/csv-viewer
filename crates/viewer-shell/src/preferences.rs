@@ -110,10 +110,56 @@ pub fn load(path: &Path) -> Result<Preferences, String> {
     }
     checked(serde_json::from_slice(&bytes).map_err(|e| format!("Invalid saved appearance: {e}"))?)
 }
+#[cfg(windows)]
+mod save_lock {
+    use std::{ffi::c_void, ptr};
+    type Handle = isize;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateMutexW(attributes: *const c_void, owner: i32, name: *const u16) -> Handle;
+        fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
+        fn ReleaseMutex(handle: Handle) -> i32;
+        fn CloseHandle(handle: Handle) -> i32;
+    }
+    pub struct Guard(Handle);
+    impl Guard {
+        pub fn acquire() -> Result<Self, String> {
+            // Session-local and shared by both viewers. No file paths or user data
+            // enter the object name; abandoned owners are recoverable after a crash.
+            let name: Vec<u16> = "Local\\MariaViewerAppearanceSaveV1"
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            unsafe {
+                let handle = CreateMutexW(ptr::null(), 0, name.as_ptr());
+                if handle == 0 {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+                match WaitForSingleObject(handle, 2000) {
+                    0 | 0x80 => Ok(Self(handle)),
+                    code => {
+                        CloseHandle(handle);
+                        Err(format!("Appearance save is busy or unavailable ({code:#x}); previous settings were preserved"))
+                    }
+                }
+            }
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe {
+                ReleaseMutex(self.0);
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
 pub fn save(path: &Path, p: &Preferences) -> Result<(), String> {
     let p = checked(p.clone())?;
     let parent = path.parent().ok_or("Saved appearance needs a directory")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let _save_lock = save_lock::Guard::acquire()?;
     // Same-directory temporary file + atomic replace; no truncated JSON on a failed write.
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     let bytes = serde_json::to_vec_pretty(&p).map_err(|e| e.to_string())?;
@@ -122,7 +168,10 @@ pub fn save(path: &Path, p: &Preferences) -> Result<(), String> {
     let mut attempt = 0;
     loop {
         match tmp.persist(path) {
-            Ok(_) => return Ok(()),
+            Ok(file) => {
+                drop(file);
+                return Ok(());
+            }
             // Windows can briefly reject replacement while another closing window
             // finishes its rename/handle close. Retry the SAME complete temp file;
             // never delete the destination or fall back to an in-place write.

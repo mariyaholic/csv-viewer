@@ -46,10 +46,16 @@ static BOOL CALLBACK find_credit(HWND h,LPARAM param){
 static int dialog_check(HWND h,DWORD pid,int command,int dismiss,int credit){
  DialogProbe probe={pid,0,0};
  if(command==105)PostMessageW(h,WM_KEYDOWN,VK_F1,0);else PostMessageW(h,WM_COMMAND,command,0);
- for(int i=0;i<300&&!probe.dialog;i++){EnumWindows(find_dialog,(LPARAM)&probe);Sleep(20);}if(!probe.dialog)return 0;
+ for(int i=0;i<300&&!probe.dialog;i++){EnumWindows(find_dialog,(LPARAM)&probe);Sleep(20);}
+ if(!probe.dialog){fprintf(stderr,"dialog command=%d did not appear; enabled=%d popup=%p owner=%p\n",command,IsWindowEnabled(h),GetLastActivePopup(h),h);return 0;}
  if(credit)EnumChildWindows(probe.dialog,find_credit,(LPARAM)&probe);
- PostMessageW(probe.dialog,WM_COMMAND,dismiss,0);for(int i=0;i<300&&IsWindow(probe.dialog);i++)Sleep(20);
- return !IsWindow(probe.dialog)&&(!credit||probe.credit)&&IsWindow(h);
+ wchar_t caption[256]={0};GetWindowTextW(probe.dialog,caption,256);
+ PostMessageW(probe.dialog,WM_COMMAND,dismiss,0);
+ int stable=0;for(int i=0;i<300&&stable<2;i++){
+  if(!IsWindow(probe.dialog)&&IsWindowEnabled(h)&&GetLastActivePopup(h)==h)stable++;else stable=0;Sleep(20);
+ }
+ if(stable<2|| (credit&&!probe.credit))fwprintf(stderr,L"dialog command=%d caption=%ls credit=%d owner-ready=%d\n",command,caption,probe.credit,stable);
+ return stable==2&&(!credit||probe.credit)&&IsWindow(h);
 }
 static int set_test_bounds(HWND h,int wanted_w,int wanted_h,RECT *actual){
  MONITORINFO info={0};info.cbSize=sizeof(info);if(!GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&info))return 0;
