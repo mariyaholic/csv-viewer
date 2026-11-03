@@ -228,6 +228,19 @@ extern "system" {
     fn GetWindowTextW(h: H, text: *mut u16, max: i32) -> i32;
     fn DrawTextW(dc: H, text: *const u16, count: i32, rect: *mut Rect, flags: u32) -> i32;
     fn MessageBoxW(h: H, text: *const u16, title: *const u16, flags: u32) -> i32;
+    fn CreatePopupMenu() -> H;
+    fn AppendMenuW(menu: H, flags: u32, id: usize, text: *const u16) -> i32;
+    fn TrackPopupMenu(
+        menu: H,
+        flags: u32,
+        x: i32,
+        y: i32,
+        reserved: i32,
+        owner: H,
+        rect: *const Rect,
+    ) -> i32;
+    fn DestroyMenu(menu: H) -> i32;
+    fn GetDlgItem(h: H, id: i32) -> H;
     fn FillRect(dc: H, rect: *const Rect, brush: H) -> i32;
     fn GetSysColor(index: i32) -> u32;
     fn SystemParametersInfoW(action: u32, param: u32, value: *mut c_void, flags: u32) -> i32;
@@ -301,6 +314,14 @@ extern "system" {
     fn DragAcceptFiles(h: H, accept: i32);
     fn DragQueryFileW(drop: H, index: u32, file: *mut u16, max: u32) -> u32;
     fn DragFinish(drop: H);
+    fn ShellExecuteW(
+        owner: H,
+        verb: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show: i32,
+    ) -> H;
 }
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -1107,6 +1128,64 @@ impl Ui {
                 }
             }
             105 => {
+                let menu = CreatePopupMenu();
+                if menu == 0 {
+                    return;
+                }
+                for (id, label) in guidance::HELP_ITEMS {
+                    if AppendMenuW(menu, 0, id as usize, wide(label).as_ptr()) == 0 {
+                        DestroyMenu(menu);
+                        return;
+                    }
+                }
+                let mut anchor: Rect = zeroed();
+                GetWindowRect(GetDlgItem(self.window, 105), &mut anchor);
+                let id = TrackPopupMenu(
+                    menu,
+                    0x100,
+                    anchor.left,
+                    anchor.bottom,
+                    0,
+                    self.window,
+                    ptr::null(),
+                );
+                DestroyMenu(menu);
+                if id != 0 {
+                    self.command(id as u16, 0);
+                }
+            }
+            120 => {
+                let guide = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| guidance::guide_path(&p));
+                if let Some(path) = guide.filter(|p| p.is_file()) {
+                    use std::os::windows::ffi::OsStrExt;
+                    let file: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+                    if ShellExecuteW(
+                        self.window,
+                        wide("open").as_ptr(),
+                        file.as_ptr(),
+                        ptr::null(),
+                        ptr::null(),
+                        1,
+                    ) > 32
+                    {
+                        return;
+                    }
+                }
+                MessageBoxW(self.window, wide("The offline guide could not be opened. Extract the complete portable ZIP, including help/index.html. You can open that file directly in a browser. No source file was changed.").as_ptr(), wide("Offline guide unavailable").as_ptr(), 0x30);
+            }
+            121..=125 => {
+                let (title, text) = match id {
+                    121 => ("Browsing, search and copying", guidance::SEARCH),
+                    122 => ("Appearance and settings", guidance::APPEARANCE),
+                    123 => ("Keyboard shortcuts", guidance::SHORTCUTS),
+                    124 => ("Troubleshooting", guidance::TROUBLESHOOTING),
+                    _ => ("About", guidance::ABOUT),
+                };
+                MessageBoxW(self.window, wide(text).as_ptr(), wide(title).as_ptr(), 0);
+            }
+            119 => {
                 let recover = self.settings_notice.is_some() && self.settings_file.is_some();
                 let text = if recover {
                     format!("{}\n\nSaved appearance could not be read. Reset saved size and theme?\nYes replaces only appearance settings; your files are not changed. No leaves the saved settings untouched.", guidance::HELP)
@@ -1677,7 +1756,7 @@ pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String
                 } else if msg.wparam == 0x0d && msg.hwnd == (*(*state).ui.get()).query {
                     Some(112)
                 } else if msg.wparam == 0x70 {
-                    Some(105)
+                    Some(119)
                 } else if msg.wparam == 0x74 {
                     Some(102)
                 } else if msg.wparam == 0x1b {

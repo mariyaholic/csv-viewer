@@ -34,14 +34,14 @@ static HWND launch_gui(wchar_t *cmd,const wchar_t *klass,PROCESS_INFORMATION *pi
  if(!CreateProcessW(0,cmd,0,0,FALSE,0,0,0,&si,pi))return 0;
  HWND h=wait_window(klass,pi->dwProcessId);if(!h){TerminateProcess(pi->hProcess,9);CloseHandle(pi->hThread);CloseHandle(pi->hProcess);}return h;
 }
-typedef struct { DWORD pid; HWND dialog; int credit; } DialogProbe;
+typedef struct { DWORD pid; HWND dialog; int credit; const wchar_t *wanted; int found; } DialogProbe;
 static BOOL CALLBACK find_dialog(HWND h,LPARAM param){
  DialogProbe *probe=(DialogProbe*)param;DWORD pid=0;wchar_t name[64];GetWindowThreadProcessId(h,&pid);GetClassNameW(h,name,64);
  if(pid==probe->pid&&!wcscmp(name,L"#32770")&&IsWindowVisible(h)){probe->dialog=h;}
  return TRUE;
 }
 static BOOL CALLBACK find_credit(HWND h,LPARAM param){
- DialogProbe *probe=(DialogProbe*)param;wchar_t text[4096]={0};SendMessageW(h,WM_GETTEXT,4096,(LPARAM)text);if(wcsstr(text,L"Made by Maria"))probe->credit=1;return TRUE;
+ DialogProbe *probe=(DialogProbe*)param;wchar_t text[4096]={0};SendMessageW(h,WM_GETTEXT,4096,(LPARAM)text);if(wcsstr(text,L"Made by Maria"))probe->credit=1;if(probe->wanted&&wcsstr(text,probe->wanted))probe->found=1;return TRUE;
 }
 typedef struct {HWND only;int count;} DialogButtons;
 static BOOL CALLBACK find_dialog_buttons(HWND h,LPARAM param){
@@ -49,11 +49,12 @@ static BOOL CALLBACK find_dialog_buttons(HWND h,LPARAM param){
  if(!_wcsicmp(cls,L"Button")&&IsWindowVisible(h)&&IsWindowEnabled(h)){buttons->only=h;buttons->count++;}return TRUE;
 }
 static int dialog_check(HWND h,DWORD pid,int command,int dismiss,int credit){
- DialogProbe probe={pid,0,0};
+ DialogProbe probe={pid,0,0,0,0};
+ switch(command){case 121:probe.wanted=L"first 64 columns";break;case 122:probe.wanted=L"normal close";break;case 123:probe.wanted=L"Ctrl+O";break;case 124:probe.wanted=L"REPORT A PROBLEM";break;case 125:probe.wanted=L"Apache-2.0";break;}
  if(command==105)PostMessageW(h,WM_KEYDOWN,VK_F1,0);else PostMessageW(h,WM_COMMAND,command,0);
  for(int i=0;i<300&&!probe.dialog;i++){EnumWindows(find_dialog,(LPARAM)&probe);Sleep(20);}
  if(!probe.dialog){fprintf(stderr,"dialog command=%d did not appear; enabled=%d popup=%p owner=%p\n",command,IsWindowEnabled(h),GetLastActivePopup(h),h);return 0;}
- if(credit)EnumChildWindows(probe.dialog,find_credit,(LPARAM)&probe);
+ if(credit||probe.wanted)EnumChildWindows(probe.dialog,find_credit,(LPARAM)&probe);
  wchar_t caption[256]={0};GetWindowTextW(probe.dialog,caption,256);
  HWND action=0;DialogButtons buttons={0};
  for(int i=0;i<300&&!action;i++){
@@ -70,7 +71,19 @@ static int dialog_check(HWND h,DWORD pid,int command,int dismiss,int credit){
   if(!IsWindow(probe.dialog)&&IsWindowEnabled(h)&&GetLastActivePopup(h)==h)stable++;else stable=0;Sleep(20);
  }
  if(stable<2|| (credit&&!probe.credit))fwprintf(stderr,L"dialog command=%d caption=%ls credit=%d owner-ready=%d\n",command,caption,probe.credit,stable);
- return stable==2&&(!credit||probe.credit)&&IsWindow(h);
+ return stable==2&&(!credit||probe.credit)&&(!probe.wanted||probe.found)&&IsWindow(h);
+}
+static BOOL CALLBACK find_help_menu(HWND h,LPARAM param){
+ DialogProbe *probe=(DialogProbe*)param;DWORD pid=0;wchar_t cls[64];GetWindowThreadProcessId(h,&pid);GetClassNameW(h,cls,64);
+ if(pid==probe->pid&&!wcscmp(cls,L"#32768")&&IsWindowVisible(h)){probe->dialog=h;}return TRUE;
+}
+static int help_menu(HWND h){
+ DialogProbe probe={0,0,0,0,0};GetWindowThreadProcessId(h,&probe.pid);
+ PostMessageW(h,WM_COMMAND,105,0);
+ for(int i=0;i<300&&!probe.dialog;i++){EnumWindows(find_help_menu,(LPARAM)&probe);if(!probe.dialog)Sleep(20);}
+ if(!probe.dialog){fprintf(stderr,"native Help popup did not become visible\n");return 0;}
+ PostMessageW(h,WM_CANCELMODE,0,0);
+ for(int i=0;i<300;i++){if(!IsWindowVisible(probe.dialog))return 1;Sleep(20);}return 0;
 }
 static int set_test_bounds(HWND h,int wanted_w,int wanted_h,RECT *actual){
  MONITORINFO info={0};info.cbSize=sizeof(info);if(!GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&info))return 0;
@@ -96,6 +109,10 @@ static int source_row(HWND h,DWORD pid,const wchar_t *wanted){
 }
 int wmain(int argc,wchar_t **argv){
  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+ if(argc==3 && (!wcscmp(argv[1],L"--help-menu")||!wcscmp(argv[1],L"--quick-help"))){
+  wchar_t klass[128];swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
+  PostMessageW(h,WM_COMMAND,!wcscmp(argv[1],L"--help-menu")?105:119,0);return 0;
+ }
  if(argc==5 && !wcscmp(argv[1],L"--size")){
   wchar_t klass[128],*end=0;swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
   long width=wcstol(argv[3],&end,10);if(*end||width<940||width>4096)return 2;
@@ -227,6 +244,13 @@ int wmain(int argc,wchar_t **argv){
  SendMessageW(GetDlgItem(h,117),WM_GETTEXT,4096,(LPARAM)text);if(!wcsstr(text,L"Open a ")||!wcsstr(text,L"read-only"))return fail("functional first-open guidance");
  if(!dialog_check(h,pi.dwProcessId,101,IDCANCEL,0))return fail("visible Open file dialog and harmless cancel");
  if(!dialog_check(h,pi.dwProcessId,105,IDOK,1))return fail("F1 opens real Help and about with Maria credit");
+ if(!help_menu(h))return fail("Help button opens and cancels a native topics menu");
+ for(int topic=121;topic<=125;topic++)if(!dialog_check(h,pi.dwProcessId,topic,IDOK,topic==125))return fail("native help topic content");
+ wchar_t guide_file[32768],*leaf=0;DWORD length=GetFullPathNameW(argv[1],32768,guide_file,&leaf);
+ if(!length||length>=32768||!leaf||(size_t)(leaf-guide_file)+16>=32768)return fail("absolute offline guide path");
+ wcscpy(leaf,L"help\\index.html");DWORD attributes=GetFileAttributesW(guide_file);
+ if(attributes==INVALID_FILE_ATTRIBUTES||(attributes&FILE_ATTRIBUTE_DIRECTORY))return fail("offline guide bundled beside executable");
+ puts("PASS: native Help topics menu, all task dialogs and bundled offline guide");
  puts("PASS: remembered normal size, screen position and theme; welcome, Open dialog cancel and F1 help");
  // Resize and maximize in one session: preserve the last normal bounds, not the maximized frame.
  if(!set_test_bounds(h,1060,680,&remembered)){return fail("choose visible restore bounds");}

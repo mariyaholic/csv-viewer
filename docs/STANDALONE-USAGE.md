@@ -1,224 +1,40 @@
-# Standalone CSV Viewer — paged desktop browser
+# Standalone usage
 
 Made by Maria. Free and open source (Apache-2.0).
 
 ## Run
 
-Extract the whole portable ZIP, then double-click `csv-desktop.exe`. No COM
-registration, preview DLL, administrator permission, terminal or installer is
-needed. Keep `csv-worker.exe` alongside it. All processing is local/read-only.
-Source files are never overwritten. Ordinary launch does not change associations.
-Windows 10 1703+ is the provisional API baseline; native Windows acceptance is pending.
+1. Extract the whole portable ZIP.
+2. Open `csv-desktop.exe`. Keep `csv-worker.exe`, `fonts/`, `help/` and licence files together.
+3. Choose **Open file…** or drop one local file into the window.
 
-Open one local file through Open, Ctrl+O, a single-file drop, or a quoted path
-argument. Each launch is independent; use another window for another file.
-F5 reloads, Esc cancels, Tab moves focus. Ctrl+F focuses search; Enter/Find applies it.
-Previous/Next browse source pages or continue the current search.
-Clear search returns to the first unfiltered page. Help / F1 explains the controls. Select a table row for its shown values
-in the inspector; Copy shown row / Ctrl+C with table focus copies only that display.
-Control characters are escaped in cells. A visible ellipsis means display truncation,
-not the complete original value. Copy does not evaluate formulas or execute links;
-pasting untrusted text into other applications remains the recipient's responsibility.
-
-The theme selector changes Paper, Ink, PC-98, Doloris, Sumimi and Marigold on the
-loaded document. `--theme doloris` (or another lower-case ID) selects a launch theme.
-Theme and window appearance are remembered on normal close (see below).
-An explicit `--theme` overrides the saved theme for this launch and is saved on close.
-Buttons retain standard native HWNDs
-with generated theme faces via NM_CUSTOMDRAW (not BS_OWNERDRAW). Rest/hover/pressed,
-focus and disabled state remain distinct; no theme changes the command behavior.
-The 40 DIP button hit box includes reserved focus/shadow space around the material.
-Native menus, combo boxes and system selection colours remain OS-drawn.
-High contrast uses the default native button renderer and overrides authored
-colours. Reload is unavailable during loading; Cancel is available only during
-an operation; Copy requires a selected row. Access keys are unique.
-Paper/Ink use installed UI/mono fonts;
-PC-98 requests MS Gothic with Windows fallback. Uika designs privately load Cinzel,
-Outfit and JetBrains Mono from `fonts/`; their OFL texts are included. No font is
-installed globally and there are no runtime font downloads.
+No terminal, administrator access or COM registration is needed. Source files are read-only.
+[The user guide](USER-GUIDE.md) explains every everyday action and recovery path.
+The portable folder includes the same guide at `help/index.html`, available from **Help → Offline user guide**.
+**F1** opens Quick help; the Help menu also has browsing/search/copy, appearance, keyboard, troubleshooting and About topics.
 
 ## Remembered appearance and first use
 
-Each viewer remembers its own theme, normal window size/position, DPI and maximized
-state. Minimized windows never reopen minimized. Saved bounds are fitted to a current
-monitor's work area and scaled for its DPI, so removing a monitor does not strand
-state. Multiple windows use the last successfully saved appearance (normally
-the last window closed).
-Settings are saved atomically **after normal close**, not on crashes or forced kills.
-
-Per-user JSON locations (no installation-directory writes or administrator access):
-
-- `%LOCALAPPDATA%\Maria\Viewers\csv-viewer\desktop.json`
-- `%LOCALAPPDATA%\Maria\Viewers\parquet-viewer\desktop.json`
-
-Viewer preferences contain **appearance only**: no file paths, source data, search
-text or clipboard contents. No automatic file reopen is enabled. The native Open
-dialog requests that sources not be added to Windows Recent Documents; Windows may
-still manage its own dialog navigation state independently of viewer preferences.
-
-A fresh window gives Open/drop instructions and read-only guidance. Search has an
-explicit Clear search action and actionable no-match text; a bounded search with
-Next available is not reported as whole-file exhaustion. The empty/error state
-explains how to open another file or retry, while a failed page request keeps its
-previous page. Row inspection includes a selection prompt and coverage details.
-
-Invalid, oversized, unsupported-version or unreadable preferences do not prevent
-viewing. Defaults are used and the saved file is left untouched. **Help** then offers
-an explicit size/theme reset; **No** preserves the existing settings, **Yes** resets
-appearance and allows a fresh save on normal close. A write failure is reported
-without altering source files. If LocalAppData is unavailable, the viewer remains
-usable but warns that appearance cannot be remembered; it never falls back to the
-current/source directory.
-
-Native integration tests set `MARIA_VIEWER_SETTINGS_DIR` to a private test root.
-That override also keeps per-viewer subdirectories; it must not point at source data.
-`--check`, browsing helper processes and Explorer/COM do not load or save appearance.
+Theme, normal window bounds and maximized state are remembered on normal close.
+Minimized windows reopen normally. CSV and Parquet keep separate appearance-only settings;
+no file paths, searches or source data are saved and no file automatically reopens.
+See [appearance and recovery](USER-GUIDE.md#remember-theme-and-window-size).
 
 ## Browsing and resource limits
 
-The GUI now reads bounded source pages and searches beyond the first 200 rows:
-**4 GiB CSV / 16 GiB Parquet source caps**, **200 rows/page**, **64 source columns**,
-**4 KiB/shown cell**, **8 MiB display text**, and **128 KiB metadata**. Format
-record/decode/deadline limits can stop earlier. There is no full-file editing or
-sorting. [Detailed paging/search semantics, format limits and isolation](LARGE-FILE-BROWSING.md).
-
-GUI requests use a read-only, same-executable helper child without copying the
-whole source. CSV UTF-8 pages use record checkpoints; other encodings replay the
-prefix. Parquet seeks footer/row groups. Search is literal lowercase matching in
-the first 64 columns; Parquet searches bounded rendered values, not every raw cell.
-A limited search with no matches can still have Next available. Source row counts
-from Parquet metadata remain unverified. Copy only includes bounded shown values.
-
-Cancel, replacement, source-change checks, generation rejection and the independent
-120-second watchdog remain active. Windows child jobs are kill-on-close; cleanup
-and joining do not block the UI. Up to two operations may briefly overlap while
-the previous one closes. Source stamps detect ordinary changes, not cryptographic
-snapshots. Local regular files are supported; OS-blocked filesystem reads can
-outlive cancellation. A failed request retains its prior page; a different file
-clears it. No parsing occurs on the HWND thread and no association is changed.
-
-The legacy `--check` inspection path still has its original **64 MiB** input cap,
-matched companion worker and private spool. COM/CLI behavior is unchanged. Keep
-that worker in the portable bundle; it is not required by the new GUI paging path.
-Stale private-spool recovery after a hard crash remains a release follow-up.
+The GUI reads bounded pages: up to 200 rows / 64 columns, with 4 GiB CSV and 16 GiB Parquet source caps.
+These caps do not guarantee every file below them can be read. No matches in an unfinished slice is not a whole-file absence result.
+Parquet metadata totals remain unverified. Copy includes shown, possibly shortened values only.
+The desktop `--check` path retains its separate 64 MiB cap.
+[Technical paging/search limits](LARGE-FILE-BROWSING.md).
 
 ## Build and verify
 
-```sh
-# Shell/MinGW developer payload with embedded asInvoker / PerMonitorV2 manifest:
-bash scripts/build-desktop.sh --debug
-# Release-profile path (not a claim that it has been exercised here):
-bash scripts/build-desktop.sh
-# Pure state, adapters and existing workspace regressions:
-cargo test --workspace --locked --offline -- --test-threads=1
-# Windows suites (Wine is corroboration, not native accessibility acceptance):
-CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --workspace --target x86_64-pc-windows-gnu --locked --offline -- --test-threads=1
-# Legacy inspection adapter (64 MiB cap); diagnostics print to stdout:
-csv-desktop --check sample.csv
-```
-
-`dist/standalone/` and `dist/csv-desktop-debug-windows.zip` are separate from the
-existing COM release payload. GNU builds are unsigned developer builds, not official
-MSVC releases. Windows SDK `rc.exe` and the MSVC native-control smoke have been
-exercised in Windows CI. Existing CLI/DLL registration commands remain unchanged.
-
-The vendored `crates/viewer-shell` source is version 0.1.0 with exact file hashes
-in `crates/viewer-shell/SOURCE.json`. It has no COM dependency or sibling checkout
-path dependency. Review/synchronize source explicitly across both repositories.
-
-## Native control smoke host
-
-After a debug portable build, a MinGW developer can run:
-
-```sh
-mkdir -p target
-x86_64-w64-mingw32-gcc -municode -O2 -Wall -Werror crates/viewer-shell/tests/native-smoke.c -o target/native-smoke.exe -lcomctl32 -lgdi32 -luser32
-wine target/native-smoke.exe 'dist\standalone\csv-desktop.exe' 'crates\csv-core\tests\fixtures\golden.csv' CSV target '007'
-```
-
-The host verifies real worker values, standard Button identity, unique access keys,
-Tab focus, native Space activation, ready/busy/selection availability, BM_CLICK
-copy/cancel, six live themes, reload and exit. It also launches fresh processes to
-check size/position/theme, maximize/restore, minimize recovery, explicit theme
-precedence, no automatic file reopen, Open-dialog cancellation, Help/F1, safe future
-settings fallback and consent-based repair. Preferences are isolated per smoke run.
-Add `--browse` after the expected
-first-cell argument with a 600-row paging fixture (needle.* at source row 451)
-to check live paging and search. `--find CSV "needle.*"` drives the real Find
-control for capture/testing. `--size CSV 1040 660` (or `Parquet`) drives a real
-HWND resize; `--probe` reports native bounds and selected theme. Capture helper modes `--probe`,
-`--press`, `--release`, `--hover`, `--away`, `--next`, `--previous`, `--close` take `CSV` as the last argument. Press/release
-uses BM_SETSTATE for deterministic native pressed-paint captures, not a claim of
-physical pointer automation. Narrator/UIA and actual Windows forced-color/DPI
-acceptance are still separate requirements.
-
-![Actual paged/searchable shared-shell controls under Wine](images/native-controls.png)
+Developer commands, native smoke arguments, packaging status and source pins moved to [Development](DEVELOPMENT.md).
 
 ## Local Windows verification — Maria
 
-**Owner: Maria. Status: pending local verification.** Use an existing Windows 11
-Home or Pro desktop; Windows Enterprise, GitHub Enterprise and a paid testing
-service are not required. Standard GitHub Actions Windows runners are free for
-public repositories, but CI does not replace the desktop checks below.
-
-CI covers the Windows/MSVC build and native-control/paging smoke. The remaining
-checks concern the interactive Windows shell, accessibility and display behavior.
-
-### Default-app readiness
-
-The app accepts a quoted file argument. Wine GUI checks passed with spaces and
-Unicode in both the executable directory and input filename. This does not prove
-Windows Explorer/default-app activation.
-
-**Not implemented yet:** dedicated desktop ProgID/open-command registration,
-Open with / Default apps discovery and a register/unregister flow. Existing COM
-preview-handler registration is separate. Manually browsing to the EXE through
-Open with is the current local test route, not a verified integration feature.
-Windows must obtain the user's default-app choice through system UI; do not write
-UserChoice or silently replace an existing default.
-
-### Local checklist
-
-- [ ] Extract the entire portable build to a stable folder. Keep `csv-worker.exe`
-  beside `csv-desktop.exe`, and keep `fonts/` and licence files. Moving the folder later
-  can invalidate a file association.
-- [ ] Record the current default for `.csv`. For a small local test file,
-  use **Open with → Choose another app**, browse to `csv-desktop.exe`, and select
-  **Always** / **Always use this app** if offered (wording varies by Windows).
-- [ ] Double-click another `.csv` file after closing the app. Confirm the
-  right document/data appears, including paths containing spaces and Unicode.
-  Confirm the selection in **Settings → Apps → Default apps**. Restore the prior
-  default after testing if desired. A failure here remains an open issue.
-- [ ] Check Open dialog, drag/drop, Tab/Shift+Tab, Enter/Space, access keys,
-  cancellation and focus return. Check Narrator reads command names, table cells,
-  selection, inspector and status updates meaningfully.
-- [ ] Change theme and window size/position, close normally and relaunch. Repeat
-  maximized and minimized; confirm normal restore bounds. Verify CSV/Parquet keep
-  independent preferences, including after moving the portable folder. Disconnect
-  a secondary monitor if available and confirm the window remains reachable.
-- [ ] Check first-open instructions, Help, a no-match search, Clear search and
-  invalid-file recovery without requiring a terminal or keyboard shortcuts.
-- [ ] Check all six themes at 100/150/200% scaling, move between monitors with
-  different scaling if available, and enable a Windows contrast theme. Labels,
-  focus and selection must remain readable; authored button colors should yield
-  to native rendering in forced colors. Check bundled-font loading/fallback.
-- [ ] Record Windows edition/build, app build/commit, theme/scaling, pass/fail
-  results and screenshots alongside this checklist. Leave untested items open.
-
-The documented GUI paging/search caps still apply when selected as the default;
-the legacy `--check` inspection path remains capped at 64 MiB. Do not mark native acceptance complete
-from a successful build, Wine test or CI smoke alone.
-
-References: [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-and [Windows app defaults](https://learn.microsoft.com/en-us/windows/apps/develop/windows-integration/default-apps-platform).
-
-## Acceptance still required
-
-Native Windows keyboard/dialog/drop, Narrator/UIA cell and status reading,
-100/150/200% DPI and real monitor changes, high contrast, long paths, and font
-fallback. Standard controls are not automatically an accessibility pass. Full
-S0 gate remains provisional until that native bench run; no toolkit acceptance
-is implied by Wine. File override settings, explicit scans, better structured-cell
-navigation, performance baselines, persisted theme settings,
-crash-spool cleanup and final signed/MSVC packaging are follow-on milestones. Parquet M4
-isolation approval is separate and unchanged.
+The unchecked owner checklist remains in [Development and Windows acceptance](DEVELOPMENT.md).
+It covers Explorer/default apps, Narrator/UIA, DPI/monitor/contrast and physical input.
+Default-app registration and signed releases are not implemented by this documentation update.
+Do not mark native acceptance complete from Wine or CI alone.
