@@ -3,9 +3,10 @@
 //! The table is owner-data: notifications read only the bounded retained sample.
 #![allow(non_snake_case)]
 use crate::{
+    browse::{Navigation, Request},
     buttons::{material, visual, ButtonMaterial, ButtonState},
     display_text,
-    supervisor::{worker_path, Adapter, Task},
+    supervisor::{Adapter, Task},
     Document, THEMES,
 };
 use std::{
@@ -298,7 +299,7 @@ unsafe fn settext(h: H, s: &str) {
 }
 #[derive(Clone, Copy, Default)]
 struct Paint {
-    buttons: [H; 5],
+    buttons: [H; 8],
     material: ButtonMaterial,
     forced: bool,
     details: H,
@@ -320,6 +321,13 @@ struct Host {
     ui: UnsafeCell<Ui>,
 }
 struct Ui {
+    query: H,
+    find: H,
+    previous: H,
+    next: H,
+    find_label: H,
+    navigation: Navigation,
+    pending: Option<Request>,
     paint: *const Cell<Paint>,
     dirty: bool,
     adapter: Adapter,
@@ -355,11 +363,18 @@ struct Ui {
 impl Ui {
     fn new(adapter: Adapter, theme: usize) -> Self {
         Self {
+            query: 0,
+            find: 0,
+            previous: 0,
+            next: 0,
+            find_label: 0,
+            navigation: Navigation::default(),
+            pending: None,
             paint: ptr::null(),
             dirty: true,
             adapter,
             doc: Document {
-                status: "Open or drop a file. Limit: 64 MiB.".into(),
+                status: "Open or drop a local file.".into(),
                 ..Document::default()
             },
             path: None,
@@ -414,6 +429,12 @@ impl Ui {
         self.combo = self.child("COMBOBOX", "Theme", 0x10000 | 0x200000 | 3, 104);
         self.about = self.child("BUTTON", "&About", 0x10000, 105);
         self.copy = self.child("BUTTON", "Copy &shown row", 0x10000, 106);
+        self.find_label = self.child("STATIC", "Search text", 0, 115);
+        self.query = self.child("EDIT", "", 0x10000 | 0x80 | 0x800000, 111);
+        SendMessageW(self.query, 0xc5, 256, 0); // bounded Unicode edit; backend also checks UTF-8 bytes
+        self.find = self.child("BUTTON", "&Find", 0x10000, 112);
+        self.previous = self.child("BUTTON", "&Previous", 0x10000, 113);
+        self.next = self.child("BUTTON", "&Next", 0x10000, 114);
         self.title = self.child("STATIC", self.adapter.title, 0, 107);
         self.status = self.child("STATIC", &self.doc.status, 0, 108);
         self.table = self.child(
@@ -464,23 +485,32 @@ impl Ui {
             );
         }
         MoveWindow(self.title, q(18), q(66), w - q(36), q(42), 1);
+        MoveWindow(self.find_label, q(20), q(124), q(88), q(28), 1);
+        MoveWindow(self.query, q(112), q(118), q(300), q(32), 1);
+        for (control, x, width) in [
+            (self.find, 428, 112),
+            (self.previous, 556, 132),
+            (self.next, 704, 120),
+        ] {
+            MoveWindow(control, q(x), q(114), q(width), q(40), 1);
+        }
         MoveWindow(self.status, q(18), h - q(66), w - q(36), q(56), 1);
         let side = q(310);
         let tablew = (w - side - q(52)).max(q(200));
         MoveWindow(
             self.table,
             q(16),
-            q(119),
+            q(167),
             tablew,
-            (h - q(200)).max(q(50)),
+            (h - q(248)).max(q(50)),
             1,
         );
         MoveWindow(
             self.details,
             q(32) + tablew,
-            q(119),
+            q(167),
             side,
-            (h - q(200)).max(q(50)),
+            (h - q(248)).max(q(50)),
             1,
         );
     }
@@ -530,7 +560,16 @@ impl Ui {
             0,
         );
         (*self.paint).set(Paint {
-            buttons: [self.open, self.reload, self.cancel, self.copy, self.about],
+            buttons: [
+                self.open,
+                self.reload,
+                self.cancel,
+                self.copy,
+                self.about,
+                self.find,
+                self.previous,
+                self.next,
+            ],
             material: material(self.theme),
             forced,
             details: self.details,
@@ -609,6 +648,11 @@ impl Ui {
             self.copy,
             self.about,
             self.status,
+            self.query,
+            self.find,
+            self.previous,
+            self.next,
+            self.find_label,
         ] {
             SendMessageW(h, 0x30, self.font as usize, 1);
         }
@@ -655,11 +699,12 @@ impl Ui {
     unsafe fn open_path(&mut self, path: PathBuf) {
         self.task.take();
         if self.path.as_ref() != Some(&path) {
+            self.navigation = Navigation::default();
+            settext(self.query, "");
             self.doc.table = None;
             self.populate();
             settext(self.details, "Opening new document…");
         }
-        let generation = self.doc.begin();
         self.path = Some(path.clone());
         settext(
             self.title,
@@ -669,25 +714,61 @@ impl Ui {
                 display_text(&path.file_name().unwrap_or_default().to_string_lossy(), 160)
             ),
         );
-        match worker_path(self.adapter) {
-            Ok(worker) => self.task = Some((generation, Task::start(self.adapter, path, worker))),
-            Err(e) => {
-                self.doc.finish(generation, Err(e));
-            }
+        // Reload starts from the beginning and explicitly adopts changed source metadata.
+        let query = self.navigation.current.query.clone();
+        settext(self.query, &query);
+        self.load_page(Request {
+            query,
+            ..Request::default()
+        });
+    }
+    unsafe fn load_page(&mut self, request: Request) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        if let Err(e) = request.validate() {
+            self.doc.status = e;
+            self.refresh_status();
+            return;
         }
+        self.task.take();
+        let generation = self.doc.begin();
+        self.doc.status = format!(
+            "Reading/searching from source row {}; Cancel available",
+            request.offset.saturating_add(1)
+        );
+        self.pending = Some(request.clone());
+        self.task = Some((generation, Task::browse(self.adapter, path, request)));
         self.refresh_status();
     }
     unsafe fn refresh_status(&mut self) {
         self.dirty = true;
         settext(self.status, &self.doc.status);
         EnableWindow(self.cancel, self.task.is_some() as i32);
+        let ready = self.path.is_some() && self.task.is_none();
+        EnableWindow(self.find, ready as i32);
+        EnableWindow(
+            self.previous,
+            (ready && self.navigation.previous().is_some()) as i32,
+        );
+        EnableWindow(
+            self.next,
+            (ready
+                && self
+                    .doc
+                    .table
+                    .as_ref()
+                    .and_then(|t| t.page.as_ref())
+                    .and_then(|p| p.next)
+                    .is_some()) as i32,
+        );
         EnableWindow(
             self.reload,
             (self.path.is_some() && self.task.is_none()) as i32,
         );
         EnableWindow(
             self.copy,
-            (self.doc.table.is_some() && self.selected().is_some()) as i32,
+            (self.task.is_none() && self.doc.table.is_some() && self.selected().is_some()) as i32,
         );
     }
     unsafe fn populate(&mut self) {
@@ -720,6 +801,15 @@ impl Ui {
             self.task.take();
             let success = r.is_ok();
             if self.doc.finish(g, r) && success {
+                if let Some(mut request) = self.pending.take() {
+                    request.expected = self
+                        .doc
+                        .table
+                        .as_ref()
+                        .and_then(|t| t.page.as_ref())
+                        .map(|p| p.stamp.clone());
+                    self.navigation.commit(request);
+                }
                 self.populate();
             }
             self.refresh_status();
@@ -746,7 +836,7 @@ impl Ui {
                     })
                     .collect::<Vec<_>>()
                     .join("\r\n");
-                settext(self.details,&format!("Selected sample row {}\r\nShown values only; … means truncated.\r\n\r\n{}\r\nCoverage / metadata:\r\n{}",i+1,body,t.details.replace('\n',"\r\n")));
+                settext(self.details,&format!("Selected page row {} (source row {})\r\nShown values only; … means truncated.\r\n\r\n{}\r\nCoverage / metadata:\r\n{}",i+1,t.page.as_ref().and_then(|p|p.source_rows.get(i)).copied().unwrap_or(i as u64).saturating_add(1),body,t.details.replace('\n',"\r\n")));
             }
         }
     }
@@ -784,6 +874,47 @@ impl Ui {
     }
     unsafe fn command(&mut self, id: u16, notification: u16) {
         match id {
+            112 if self.task.is_none() => {
+                let mut text = [0u16; 1025];
+                let n = GetWindowTextW(self.query, text.as_mut_ptr(), text.len() as i32).max(0)
+                    as usize;
+                let query = String::from_utf16_lossy(&text[..n]);
+                self.load_page(Request {
+                    offset: 0,
+                    query,
+                    byte_offset: None,
+                    expected: self
+                        .doc
+                        .table
+                        .as_ref()
+                        .and_then(|t| t.page.as_ref())
+                        .map(|p| p.stamp.clone()),
+                });
+            }
+            113 if self.task.is_none() => {
+                if let Some(request) = self.navigation.previous() {
+                    self.load_page(request);
+                }
+            }
+            114 if self.task.is_none() => {
+                if let Some(offset) = self
+                    .doc
+                    .table
+                    .as_ref()
+                    .and_then(|t| t.page.as_ref())
+                    .and_then(|p| p.next)
+                {
+                    let mut request = self.navigation.current.clone();
+                    request.offset = offset;
+                    request.byte_offset = self
+                        .doc
+                        .table
+                        .as_ref()
+                        .and_then(|t| t.page.as_ref())
+                        .and_then(|p| p.next_byte);
+                    self.load_page(request);
+                }
+            }
             101 => self.open_dialog(),
             102 => {
                 if self.task.is_none() {
@@ -808,7 +939,7 @@ impl Ui {
             105 => {
                 MessageBoxW(self.window,wide("Made by Maria\nFree and open source (Apache-2.0).\n\nRead-only, local, worker-backed sample inspector.\nSix base designs; no COM registration required.\nFirst desktop slice: 64 MiB input, 200 rows, 64 shown columns.\nNo edits, full scan or arbitrary paging in this slice.\nPrivate OFL fonts: Cinzel, Outfit, JetBrains Mono when supplied.\nNative accessibility acceptance is pending.").as_ptr(),wide("About standalone viewer").as_ptr(),0);
             }
-            106 => self.copy_row(),
+            106 if self.task.is_none() => self.copy_row(),
             _ => {}
         }
     }
@@ -1250,8 +1381,16 @@ pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String
             }
             let ctrl = GetKeyState(0x11) < 0;
             if msg.message == 0x100 {
+                if ctrl && msg.wparam == b'F' as usize {
+                    let query = (*(*state).ui.get()).query;
+                    SetFocus(query);
+                    SendMessageW(query, 0xb1, 0, -1);
+                    continue;
+                }
                 let command = if ctrl && msg.wparam == b'O' as usize {
                     Some(101)
+                } else if msg.wparam == 0x0d && msg.hwnd == (*(*state).ui.get()).query {
+                    Some(112)
                 } else if msg.wparam == 0x74 {
                     Some(102)
                 } else if msg.wparam == 0x1b {

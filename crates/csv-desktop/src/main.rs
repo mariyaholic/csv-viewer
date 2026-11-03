@@ -3,6 +3,17 @@
 fn main() {
     let adapter = csv_desktop::adapter();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|s| s == "--browse-worker") {
+        let result = if args.len() == 2 {
+            viewer_shell::browse::serve(std::path::Path::new(&args[1]), csv_desktop::browse)
+        } else {
+            Err("Desktop worker requires one source".into())
+        };
+        if result.is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().is_some_and(|s| s == "--check") {
         let Some(path) = args.get(1) else {
             std::process::exit(2);

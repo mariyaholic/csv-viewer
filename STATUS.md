@@ -1,5 +1,39 @@
 # Status
 
+## Large-file paging/search — priority implementation
+
+Implemented read-only Previous/Next, bounded literal search beyond the first 200
+rows, exact source-row inspection and bounded navigation history. Same-executable
+owned helper children parse directly without full-source copies; the original
+Explorer/COM/CLI protocols and Low-IL behavior are unchanged. GUI source caps:
+4 GiB CSV / 16 GiB Parquet, within documented format limits. UTF-8 CSV resumes at
+record checkpoints; UTF-16/Windows-1252 replay their prefix. Search scope and
+continuation/exhaustion are explicit. Default-app registration and preference/
+geometry persistence are independent, deferred work, not prerequisites.
+
+Verified local full-workspace suites: **161 Linux / 172 Windows-GNU/Wine
+passed**, including explicit CSV ignored-worker coverage where applicable and
+PARQUET_PREVIEW_E2E=1. Commands: `cargo build --workspace --locked --offline`;
+`cargo test --workspace --locked --offline -- --test-threads=1`; repeat with
+`--target x86_64-pc-windows-gnu` and the Wine runner. CSV additionally executes
+`cargo test -p csv-preview --test session -- --ignored --test-threads=1` on both
+platforms. Formatting and strict scoped Clippy pass on both; CSV scope is the
+workspace, Parquet scope is shell/desktop `--no-deps` (inherited core warnings
+are not claimed clean). Design validator, 18 design tests and offline licence
+checks pass. Shared shell: 2532 raw Rust lines including build script/tests.
+
+Real native C smoke passes 600-row Next/Previous and literal search at source
+row 451, no-match/clear, source IDs, copy/cancel/reload, standard buttons, Tab/Space,
+all six themes and clean exit. Generated 80,000-row CSV (83,920,016 B) and Parquet
+(84,274,434 B) opened in actual GUIs beyond the former 64 MiB cap. Latest native
+screenshots are committed; review GIFs/logs are in the portfolio verification
+folder. CI now includes the equivalent MSVC paging/search smoke. Hosted CI is
+reported on the PR, not assumed from Wine. No subagents or associations changed.
+
+Open: Maria's local Windows Explorer/default-app, Narrator/UIA, DPI/monitor,
+forced-color/font/physical-interaction acceptance; release signing; default-app
+registration; settings persistence. [Full limits and verification](docs/LARGE-FILE-BROWSING.md).
+
 ## Native themed controls — implementation and hosted verification
 
 Buttons now use the 0.2 design materials in the running apps, generated at build
