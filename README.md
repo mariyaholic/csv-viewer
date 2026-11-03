@@ -7,7 +7,8 @@ Made by Maria
 A native Windows desktop companion is now implemented with **Paper, Ink, PC-98,
 Doloris, Sumimi and Marigold** themes. Extract its portable developer ZIP and run
 `csv-desktop.exe`; no COM registration is needed. This is a bounded, read-only
-sample viewer, not yet a full-file spreadsheet.
+paged browser with cross-page literal search, not an editable spreadsheet.
+[Large-file browsing and search limits](docs/LARGE-FILE-BROWSING.md).
 
 [Run/build instructions, limits and remaining native acceptance](docs/STANDALONE-USAGE.md).
 

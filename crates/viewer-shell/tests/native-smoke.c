@@ -11,8 +11,22 @@
 #include <wchar.h>
 #include <wctype.h>
 static int fail(const char *what){fprintf(stderr,"FAIL: %s (Win32 %lu)\n",what,GetLastError());return 1;}
+static int ready(HWND h){for(int i=0;i<1000;i++){if(IsWindowEnabled(GetDlgItem(h,102)))return 1;Sleep(20);}return 0;}
+static int source_row(HWND h,DWORD pid,const wchar_t *wanted){
+ HWND table=GetDlgItem(h,109);LVITEMW row={0};row.state=LVIS_SELECTED|LVIS_FOCUSED;row.stateMask=row.state;
+ HANDLE p=OpenProcess(PROCESS_VM_OPERATION|PROCESS_VM_WRITE,FALSE,pid);if(!p)return 0;
+ void *remote=VirtualAllocEx(p,0,sizeof(row),MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);if(!remote){CloseHandle(p);return 0;}
+ int ok=WriteProcessMemory(p,remote,&row,sizeof(row),0)!=0;
+ if(ok)SendMessageW(table,LVM_SETITEMSTATE,0,(LPARAM)remote);
+ VirtualFreeEx(p,remote,0,MEM_RELEASE);CloseHandle(p);
+ wchar_t text[4096]={0};SendMessageW(GetDlgItem(h,110),WM_GETTEXT,4096,(LPARAM)text);return ok&&wcsstr(text,wanted)!=0;
+}
 int wmain(int argc,wchar_t **argv){
- if(argc==3 && (!wcscmp(argv[1],L"--probe")||!wcscmp(argv[1],L"--close")||!wcscmp(argv[1],L"--press")||!wcscmp(argv[1],L"--release")||!wcscmp(argv[1],L"--hover")||!wcscmp(argv[1],L"--away"))){
+ if(argc==4 && !wcscmp(argv[1],L"--find")){
+  wchar_t klass[128];swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
+  SetWindowTextW(GetDlgItem(h,111),argv[3]);SendMessageW(GetDlgItem(h,112),BM_CLICK,0,0);return 0;
+ }
+ if(argc==3 && (!wcscmp(argv[1],L"--probe")||!wcscmp(argv[1],L"--close")||!wcscmp(argv[1],L"--press")||!wcscmp(argv[1],L"--release")||!wcscmp(argv[1],L"--hover")||!wcscmp(argv[1],L"--away")||!wcscmp(argv[1],L"--next")||!wcscmp(argv[1],L"--previous"))){
   wchar_t klass[128];swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
   if(!wcscmp(argv[1],L"--close")){PostMessageW(h,WM_CLOSE,0,0);return 0;}
   if(!wcscmp(argv[1],L"--hover")||!wcscmp(argv[1],L"--away")){
@@ -24,6 +38,10 @@ int wmain(int argc,wchar_t **argv){
    SendMessageW(button,BM_SETSTATE,pressed,0);RedrawWindow(button,0,0,RDW_INVALIDATE|RDW_UPDATENOW);
    return ((SendMessageW(button,BM_GETSTATE,0,0)&BST_PUSHED)!=0)==pressed?0:5;
   }
+  if(!wcscmp(argv[1],L"--next")||!wcscmp(argv[1],L"--previous")){
+   SendMessageW(GetDlgItem(h,!wcscmp(argv[1],L"--next")?114:113),BM_CLICK,0,0);return 0;
+  }
+  RedrawWindow(h,0,0,RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
   RECT button;GetWindowRect(GetDlgItem(h,101),&button);printf("button=%ld,%ld,%ld,%ld\n",button.left,button.top,button.right-button.left,button.bottom-button.top);
   int rows=(int)SendMessageW(GetDlgItem(h,109),LVM_GETITEMCOUNT,0,0);wchar_t status[4096];GetWindowTextW(GetDlgItem(h,108),status,4096);fwprintf(stdout,L"rows=%d status=%ls\n",rows,status);return rows>0?0:4;
  }
@@ -43,8 +61,8 @@ int wmain(int argc,wchar_t **argv){
  if(wcscmp(button_class,L"Button") && wcscmp(button_class,L"BUTTON"))return fail("standard button accessibility identity");
  if((GetWindowLongPtrW(open,GWL_STYLE)&BS_TYPEMASK)==BS_OWNERDRAW)return fail("native button behavior must not be owner-replaced");
  if(!wcsstr(text,L"…"))return fail("Open label requests file input");
- HWND commands[]={open,reload,cancel,copy,GetDlgItem(h,105)};wchar_t used[6]={0};
- for(int i=0;i<5;i++){
+ HWND commands[]={open,reload,cancel,copy,GetDlgItem(h,105),GetDlgItem(h,112),GetDlgItem(h,113),GetDlgItem(h,114)};wchar_t used[9]={0};
+ for(int i=0;i<8;i++){
   GetWindowTextW(commands[i],text,4096);wchar_t *mark=wcschr(text,L'&');
   if(!mark||!mark[1])return fail("button access key missing");
   wchar_t key=(wchar_t)towlower(mark[1]);if(wcschr(used,key))return fail("duplicate native access key");used[i]=key;
@@ -74,7 +92,7 @@ int wmain(int argc,wchar_t **argv){
  VirtualFreeEx(process,remote,0,MEM_RELEASE);CloseHandle(process);
  if(!IsWindowEnabled(copy))return fail("row selection enables native Copy");
  SendMessageW(GetDlgItem(h,110),WM_GETTEXT,4096,(LPARAM)text);
- wchar_t first[1024]={0};if(argc>5){wcscpy(first,argv[5]);if(!wcsstr(text,L"Selected sample row 1") || !wcsstr(text,first)){fwprintf(stderr,L"inspector: %ls\n",text);PostMessageW(h,WM_CLOSE,0,0);return fail("first source value preserved in selected row inspector");}}
+ wchar_t first[1024]={0};if(argc>5){wcscpy(first,argv[5]);if(!wcsstr(text,L"Selected page row 1") || !wcsstr(text,first)){fwprintf(stderr,L"inspector: %ls\n",text);PostMessageW(h,WM_CLOSE,0,0);return fail("first source value preserved in selected row inspector");}}
  fwprintf(stdout,L"PASS: actual selected row inspector contains %ls\n",first);
  const COLORREF bg[]={0xF8FDFF,0x13090B,0x2E1510,0x13090B,0xF8FDFF,0x1C1014};
  for(int i=0;i<6;i++){
@@ -88,8 +106,20 @@ int wmain(int argc,wchar_t **argv){
  process=OpenProcess(PROCESS_VM_OPERATION|PROCESS_VM_READ|PROCESS_VM_WRITE,FALSE,pi.dwProcessId);remote=VirtualAllocEx(process,0,sizeof(select),MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);WriteProcessMemory(process,remote,&select,sizeof(select),0);SendMessageW(table,LVM_SETITEMSTATE,0,(LPARAM)remote);VirtualFreeEx(process,remote,0,MEM_RELEASE);CloseHandle(process);
  SendMessageW(copy,BM_CLICK,0,0);if(OpenClipboard(h)){HANDLE data=GetClipboardData(CF_UNICODETEXT);if(!data)return fail("copy shown row");const wchar_t *s=GlobalLock(data);int contains=s&&wcsstr(s,first)!=0;if(s)GlobalUnlock(data);CloseClipboard();if(!contains)return fail("clipboard data preserves shown first value");}else return fail("clipboard open");
  puts("PASS: select row and copy actual shown values");
+ if(argc>6 && !wcscmp(argv[6],L"--browse")){
+  HWND next=GetDlgItem(h,114),previous=GetDlgItem(h,113),query=GetDlgItem(h,111),find=GetDlgItem(h,112);
+  if(!IsWindowEnabled(next)||IsWindowEnabled(previous))return fail("initial page availability");
+  SendMessageW(next,BM_CLICK,0,0);if(!ready(h)||!source_row(h,pi.dwProcessId,L"source row 201)"))return fail("real next page source rows");
+  SendMessageW(previous,BM_CLICK,0,0);if(!ready(h)||!source_row(h,pi.dwProcessId,L"source row 1)"))return fail("real previous page");
+  SetWindowTextW(query,L"needle.*");SendMessageW(find,BM_CLICK,0,0);
+  if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=1||!source_row(h,pi.dwProcessId,L"source row 451)"))return fail("global literal search beyond first page");
+  SetWindowTextW(query,L"definitely absent literal.*");SendMessageW(find,BM_CLICK,0,0);
+  if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=0||IsWindowEnabled(next))return fail("search exhaustion, not false matches");
+  SetWindowTextW(query,L"");SendMessageW(find,BM_CLICK,0,0);if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=200)return fail("clear search returns first page");
+  puts("PASS: native next/previous, source row numbers, global literal search beyond row 200 and clear/no-match behavior");
+ }
  // Reload and Cancel are recoverable; a further reload must repopulate.
  SendMessageW(reload,BM_CLICK,0,0);if(!IsWindowEnabled(cancel)||IsWindowEnabled(reload))return fail("busy native button states");SendMessageW(cancel,BM_CLICK,0,0);GetWindowTextW(status,text,4096);if(!wcsstr(text,L"Cancelled"))return fail("cancel feedback");
- SendMessageW(h,WM_COMMAND,102,0);for(int i=0;i<500;i++){GetWindowTextW(status,text,4096);if(wcsstr(text,L"sample"))break;Sleep(20);}if(!wcsstr(text,L"sample"))return fail("reload after cancel");puts("PASS: cancel/reload recovery");
+ SendMessageW(h,WM_COMMAND,102,0);for(int i=0;i<500;i++){GetWindowTextW(status,text,4096);if(wcsstr(text,L"page rows"))break;Sleep(20);}if(!wcsstr(text,L"page rows"))return fail("reload after cancel");puts("PASS: cancel/reload recovery");
  PostMessageW(h,WM_CLOSE,0,0);if(WaitForSingleObject(pi.hProcess,5000)!=WAIT_OBJECT_0){TerminateProcess(pi.hProcess,9);return fail("clean close");}DWORD code;GetExitCodeProcess(pi.hProcess,&code);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);if(code)return fail("GUI exit status");puts("PASS: clean standalone GUI exit");return 0;
 }
