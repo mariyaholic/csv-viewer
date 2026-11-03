@@ -119,6 +119,27 @@ impl Task {
         Self::with_deadline(adapter, path, worker, Duration::from_secs(120))
     }
     fn with_deadline(adapter: Adapter, path: PathBuf, worker: PathBuf, timeout: Duration) -> Self {
+        Self::with_query(adapter, path, worker, timeout, None)
+    }
+    pub fn browse(adapter: Adapter, path: PathBuf, request: crate::browse::Request) -> Self {
+        match std::env::current_exe() {
+            Ok(worker) => Self::with_query(
+                adapter,
+                path,
+                worker,
+                Duration::from_secs(120),
+                Some(request),
+            ),
+            Err(_) => Self::start(adapter, path, PathBuf::from("missing-desktop-worker")),
+        }
+    }
+    fn with_query(
+        adapter: Adapter,
+        path: PathBuf,
+        worker: PathBuf,
+        timeout: Duration,
+        request: Option<crate::browse::Request>,
+    ) -> Self {
         let (tx, rx) = sync_channel(1);
         let cancel = Arc::new(AtomicBool::new(false));
         let child = Arc::new(Mutex::new(None::<OwnedChild>));
@@ -149,7 +170,15 @@ impl Task {
             });
             let spool = tempfile::Builder::new().prefix("viewer-desktop-").tempdir();
             let result = match &spool {
-                Ok(dir) => run(adapter, &path, &worker, &flag, &process, dir.path()),
+                Ok(dir) => run(
+                    adapter,
+                    &path,
+                    &worker,
+                    &flag,
+                    &process,
+                    dir.path(),
+                    request.as_ref(),
+                ),
                 Err(e) => Err(format!("Cannot create private desktop spool: {e}")),
             };
             drop(finished);
@@ -229,13 +258,14 @@ fn run(
     cancel: &AtomicBool,
     child: &Mutex<Option<OwnedChild>>,
     spool: &Path,
+    request: Option<&crate::browse::Request>,
 ) -> Result<Table, String> {
     let mut file = File::open(path).map_err(|e| format!("Cannot open file read-only: {e}"))?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("Choose a regular file, not a directory or device".into());
     }
-    if meta.len() > MAX_SOURCE_BYTES {
+    if request.is_none() && meta.len() > MAX_SOURCE_BYTES {
         return Err("This first desktop slice accepts files up to 64 MiB; existing CLI/preview limits are unchanged.".into());
     }
     if !worker.is_file() {
@@ -245,7 +275,20 @@ fn run(
         ));
     }
     let mut cmd = Command::new(worker);
-    if adapter.csv_spool {
+    if let Some(request) = request {
+        request.validate()?;
+        if meta.len() > 16 * 1024 * 1024 * 1024 {
+            return Err("Desktop file limit: 16 GiB".into());
+        }
+        if request
+            .expected
+            .as_ref()
+            .is_some_and(|s| *s != crate::browse::Stamp::from_metadata(&meta))
+        {
+            return Err("Source changed; Reload before paging/searching".into());
+        }
+        cmd.arg("--browse-worker").arg(path);
+    } else if adapter.csv_spool {
         cmd.arg("--spool-dir").arg(spool);
     }
     #[cfg(windows)]
@@ -288,7 +331,21 @@ fn run(
         pipes
     };
     let mut reader = BufReader::new(output);
-    let result = (adapter.inspect)(&mut file, spool, &mut input, &mut reader, cancel);
+    let result = if let Some(request) = request {
+        crate::browse::write(&mut input, request)?;
+        let result: Result<Table, String> = crate::browse::read(&mut reader)?;
+        let table = result?;
+        if table
+            .page
+            .as_ref()
+            .is_none_or(|p| p.stamp != crate::browse::Stamp::from_metadata(&meta))
+        {
+            return Err("Source changed before worker opened it; Reload".into());
+        }
+        Ok(table)
+    } else {
+        (adapter.inspect)(&mut file, spool, &mut input, &mut reader, cancel)
+    };
     if cancel.load(Ordering::SeqCst) {
         return Err("Cancelled".into());
     }

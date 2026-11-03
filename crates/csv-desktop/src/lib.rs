@@ -83,6 +83,7 @@ fn table(report: csvview_core::ScanReport) -> Result<Table, String> {
         rows: report.preview_rows.into_iter().map(|r| r.cells).collect(),
         coverage,
         details,
+        page: None,
     }
     .bounded())
 }
@@ -101,4 +102,86 @@ mod tests {
         assert_eq!(t.rows[0][0], "001024");
         assert!(t.coverage.contains("retained sample"));
     }
+}
+
+#[cfg(test)]
+mod browse_tests {
+    use super::*;
+    #[test]
+    fn desktop_page_has_real_source_offsets_and_detects_stale_sources() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/csv-core/tests/fixtures/golden.csv");
+        let request = viewer_shell::browse::Request {
+            offset: 1,
+            ..Default::default()
+        };
+        let page = browse(&path, &request).unwrap();
+        assert_eq!(page.page.as_ref().unwrap().source_rows[0], 1);
+        let mut request = viewer_shell::browse::Request {
+            query: "definitely absent literal.*".into(),
+            ..Default::default()
+        };
+        let missing = browse(&path, &request).unwrap();
+        assert!(missing.rows.is_empty());
+        assert!(missing.page.unwrap().next.is_none());
+        request.expected = Some(viewer_shell::browse::Stamp {
+            bytes: 0,
+            modified_ns: None,
+        });
+        assert!(browse(&path, &request).unwrap_err().contains("changed"));
+    }
+}
+
+/// Desktop-only direct read, invoked in an owned child, never the UI thread.
+pub fn browse(path: &Path, request: &viewer_shell::browse::Request) -> Result<Table, String> {
+    request.validate()?;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    let stamp = viewer_shell::browse::Stamp::from_metadata(&meta);
+    if !meta.is_file() {
+        return Err("Choose a regular local file".into());
+    }
+    if request.expected.as_ref().is_some_and(|s| *s != stamp) {
+        return Err("Source changed; Reload before continuing".into());
+    }
+
+    if stamp.bytes > 4 * 1024 * 1024 * 1024 {
+        return Err("CSV desktop file limit: 4 GiB".into());
+    }
+    if request.byte_offset.is_some_and(|b| b > meta.len()) {
+        return Err("CSV checkpoint is outside the file".into());
+    }
+    let page = csvview_core::scan::browse_page_at(
+        &mut file,
+        request.offset,
+        200,
+        &request.query,
+        request.byte_offset,
+    )
+    .map_err(|e| e.to_string())?;
+    if viewer_shell::browse::Stamp::from_metadata(&file.metadata().map_err(|e| e.to_string())?)
+        != stamp
+    {
+        return Err("Source changed while reading; Reload".into());
+    }
+    let coverage=format!("{} page rows; scanned {} rows from {}; {}. Literal lowercase matching in first 64 columns.",page.rows.len(),page.scanned_to.saturating_sub(request.offset),request.offset.saturating_add(1),if page.next.is_some(){"Next continues reading/search"}else{"end of source reached"});
+    let details = format!(
+        "{} 20 s per parse; 1 MiB per record / 16 KiB per field; 1 MiB retained raw text.",
+        page.notes
+    );
+    Ok(Table {
+        columns: page.columns,
+        rows: page.rows,
+        coverage,
+        details,
+        page: Some(viewer_shell::browse::Page {
+            start: request.offset,
+            next: page.next,
+            source_rows: page.source_rows,
+            stamp,
+            next_byte: page.next_byte,
+            scanned_to: page.scanned_to,
+        }),
+    }
+    .bounded())
 }

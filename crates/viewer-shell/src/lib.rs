@@ -76,12 +76,14 @@ pub const THEMES: &[Theme] = &[
 pub fn theme(id: &str) -> &'static Theme {
     THEMES.iter().find(|t| t.id == id).unwrap_or(&THEMES[0])
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Table {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub coverage: String,
     pub details: String,
+    #[serde(default)]
+    pub page: Option<browse::Page>,
 }
 impl Table {
     pub fn bounded(mut self) -> Self {
@@ -108,6 +110,14 @@ impl Table {
             kept += 1;
         }
         self.rows.truncate(kept);
+        if let Some(page) = self.page.as_mut() {
+            if kept < page.source_rows.len() {
+                page.next = Some(page.source_rows[kept]);
+                page.next_byte = None;
+                page.scanned_to = page.source_rows[kept];
+            }
+            page.source_rows.truncate(kept);
+        }
         if source_columns > self.columns.len() || source_rows > self.rows.len() {
             self.coverage = format!(
                 "{}; display limited to {} rows / {} columns",
@@ -150,6 +160,7 @@ pub fn display_text(s: &str, limit: usize) -> String {
     }
     out
 }
+pub mod browse;
 pub mod buttons;
 pub mod supervisor;
 #[cfg(windows)]
