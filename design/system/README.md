@@ -70,6 +70,9 @@ then retire duplicated literals only after parity tests and native acceptance.
 - **Marigold:** raised plum ground, orange **ornamental trim**, Cinzel headings,
   stronger section framing. Orange never becomes an implicit error or warning.
 
+UI copy is functional only: labels, values, scope, errors and recovery actions.
+No taglines, design commentary or explanatory filler in application surfaces.
+
 All themes keep the same command order, controls, shortcuts, status language and
 information architecture. Native buttons, menus, selection and high-contrast
 colors may differ from the illustrative component plates. Theme switching must
@@ -100,4 +103,5 @@ Token contrast validation is not a rendered accessibility certification. Native
 forced-color, text scaling, focus visibility and UIA reading remain bench tests.
 `components-*.png` and `six-system-faces.png` are **illustrative future-component
 specimens**, not working application screenshots. They use documented fallback
-fonts where target Windows faces are unavailable.
+fonts where target Windows faces are unavailable: DejaVu Sans/Mono for Segoe UI/Consolas,
+and Unifont for MS Gothic. Uika plates use the bundled Cinzel/Outfit/JetBrains Mono.

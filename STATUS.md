@@ -1,5 +1,11 @@
 # Status
 
+## Design specimen copy cleanup
+
+Removed taglines and explanatory filler; retained functional labels/data/scope
+and error recovery. All six plates regenerated. Design validation: 17 tests
+and 150 contrast pairs pass. No native app behavior changed.
+
 ## Extensible six-theme design system — 2026-11-02
 
 Added `design/system/` contract v0.1.0: reference → semantic → component aliases,
