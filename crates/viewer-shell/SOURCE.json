@@ -10,7 +10,7 @@
     "src/supervisor.rs": "95ac2fbc787bb2d040aabb3ed5e925fe606f1b70ffc2ba6a9eb7ed94747381ce",
     "src/win32.rs": "36ee930f0a63b6b0b46050176bee0e9373ab8566e1aa3d030ea2d760b7496baa",
     "tests/button_material.rs": "13ca48c5162bf3cf5ca14e54e2e312e434634c625dd2022b481b83c3c6f89837",
-    "tests/native-smoke.c": "dd1bb398f6857bde400d72a6beb562d996ec7c22c573cd97e54b91463cdb35cc",
+    "tests/native-smoke.c": "2ebc496b00cc5bad15979641959e900857e8f1d3880a128d72c3e51513680f52",
     "src/browse.rs": "8d053d6624a95e8c960fbea7c97789ecf21341a65514b79c6befdbd7f626db07",
     "tests/browse.rs": "6e11b20b0579cb942c5b58c5efca774fd4b32bf4f4b008c49a4a5296d917f24b",
     "src/preferences.rs": "80dfc760c9ce729c2c16c870d023b9bbf9aa0539152b4ecbf2bf0c331db28c9a",
