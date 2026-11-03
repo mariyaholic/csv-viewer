@@ -2,6 +2,12 @@ Made by Maria
 
 # CSV viewer and preview
 
+## Documentation
+
+- [Start here: desktop user guide](docs/USER-GUIDE.md) — opening, browsing, searching, copying and appearance.
+- [Documentation index](docs/README.md) — user help, developer references and Windows acceptance.
+- In the app, choose **Help** for topics or the bundled offline guide; **F1** opens Quick help.
+
 ## Standalone desktop preview
 
 A native Windows desktop companion is now implemented with **Paper, Ink, PC-98,
@@ -73,7 +79,7 @@ Type-check the Windows-only module on a non-Windows host (no link, no run):
 RUSTFLAGS='--cfg csvview_windows_check' cargo check -p csv-preview
 ```
 
-## Use
+## Terminal viewer use
 
 ```sh
 # Plain-text preview (also used automatically when stdout is not a terminal)
@@ -92,6 +98,7 @@ cargo run -p csv-viewer -- --render --delimiter ';' --encoding windows-1252 \
   --header present path/to/file.csv
 ```
 
+These terminal/preview settings are separate from desktop appearance preferences.
 Settings are per-user JSON (`%APPDATA%\csv-viewer\settings.json` on Windows,
 `$XDG_CONFIG_HOME/csv-viewer/settings.json` or
 `~/.config/csv-viewer/settings.json` elsewhere). `CSV_VIEWER_SETTINGS` and

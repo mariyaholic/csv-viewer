@@ -1,5 +1,37 @@
 # Status
 
+## Documentation and task-based Help — 2026-11-03
+
+Added a reader-first docs index and task-oriented user guide for opening files,
+paging/search scope, safe copy, remembered appearance, shortcuts and recovery.
+Build instructions/evidence and Maria's full native acceptance checklist now live
+in docs/DEVELOPMENT.md; STANDALONE-USAGE.md remains a short compatible entry point.
+Corrected stale standalone/persistence scope statements without rewriting original
+research. No agent instructions or existing legal notices changed.
+
+Help is now a standard native seven-topic menu. F1 opens compact Quick help;
+other topics cover browsing/search/copy, appearance, keyboard, troubleshooting
+and About. All menu mnemonics are distinct. The portable ZIP includes a generated,
+self-contained help/index.html, opened from the EXE's directory, never a source
+or working directory. No scripts, external fonts or network resources; Paper/Ink
+tokens and system fonts. Markdown remains the editable source; CI/package checks
+reject stale exports. No new runtime or Python dependency and no subagents.
+
+Local verification: **175 Linux / 187 Windows-GNU/Wine workspace tests passed**; plus one explicitly enabled CSV worker integration per target.
+Formatting, applicable strict Clippy on both targets (CSV workspace; Parquet
+shell/desktop --no-deps), six docs tests, 18 design tests / 192 contrast checks,
+offline licences, portable builds/checksums and expanded native GUI smoke pass.
+Python ruff/pytest were unavailable; stdlib unittest and py_compile were used,
+without installing tools. Evidence: portfolio verification/docs-and-help/.
+
+Actual Wine app/menu/dialog captures and 375/1440 px Chromium guide captures were
+reviewed. Wine has no HTML association: ShellExecute returned 31 and the app's
+manual-open recovery appeared; the same guide renders in installed Chromium.
+Owner Windows/default-browser handoff remains pending along with prior native
+Explorer/UIA/DPI/contrast/physical-input acceptance. No defaults or associations
+changed. Hosted Windows/MSVC CI is reported on the PR, not inferred from Wine.
+Debug portable builds remain unsigned; this is not native release acceptance.
+
 ## Everyday usability — 2026-11-03
 
 Theme, normal window size/position, DPI and maximized state now survive normal

@@ -63,8 +63,8 @@ limits remain in place. No full-source copy is made for GUI browsing. It is not 
 new low-integrity sandbox: the helper has the user's normal read permissions.
 Explorer/COM workers, wire protocols, Low-IL/stream behavior and CLI registration
 remain unchanged. The legacy desktop `--check` path still exercises the original
-64 MiB inspection adapter and its matched companion worker. No defaults,
-associations, theme preferences or window settings are written by this feature.
+64 MiB inspection adapter and its matched companion worker. Paging does not change defaults or file associations. Desktop appearance is
+saved separately on normal close; see [the user guide](USER-GUIDE.md).
 
 ## Verification and remaining acceptance
 
