@@ -43,6 +43,11 @@ static BOOL CALLBACK find_dialog(HWND h,LPARAM param){
 static BOOL CALLBACK find_credit(HWND h,LPARAM param){
  DialogProbe *probe=(DialogProbe*)param;wchar_t text[4096]={0};SendMessageW(h,WM_GETTEXT,4096,(LPARAM)text);if(wcsstr(text,L"Made by Maria"))probe->credit=1;return TRUE;
 }
+typedef struct {HWND only;int count;} DialogButtons;
+static BOOL CALLBACK find_dialog_buttons(HWND h,LPARAM param){
+ DialogButtons *buttons=(DialogButtons*)param;wchar_t cls[64];GetClassNameW(h,cls,64);
+ if(!_wcsicmp(cls,L"Button")&&IsWindowVisible(h)&&IsWindowEnabled(h)){buttons->only=h;buttons->count++;}return TRUE;
+}
 static int dialog_check(HWND h,DWORD pid,int command,int dismiss,int credit){
  DialogProbe probe={pid,0,0};
  if(command==105)PostMessageW(h,WM_KEYDOWN,VK_F1,0);else PostMessageW(h,WM_COMMAND,command,0);
@@ -50,8 +55,16 @@ static int dialog_check(HWND h,DWORD pid,int command,int dismiss,int credit){
  if(!probe.dialog){fprintf(stderr,"dialog command=%d did not appear; enabled=%d popup=%p owner=%p\n",command,IsWindowEnabled(h),GetLastActivePopup(h),h);return 0;}
  if(credit)EnumChildWindows(probe.dialog,find_credit,(LPARAM)&probe);
  wchar_t caption[256]={0};GetWindowTextW(probe.dialog,caption,256);
- HWND action=GetDlgItem(probe.dialog,dismiss);
- if(!action){fwprintf(stderr,L"dialog command=%d caption=%ls missing action=%d\n",command,caption,dismiss);return 0;}
+ HWND action=0;DialogButtons buttons={0};
+ for(int i=0;i<300&&!action;i++){
+  buttons.only=0;buttons.count=0;EnumChildWindows(probe.dialog,find_dialog_buttons,(LPARAM)&buttons);
+  action=GetDlgItem(probe.dialog,dismiss);
+  if(dismiss==IDOK&&buttons.count==1)action=buttons.only;
+  if(action&&(!IsWindowVisible(action)||!IsWindowEnabled(action)))action=0;
+  if(!action)Sleep(20);
+ }
+ if(!action){fwprintf(stderr,L"dialog command=%d caption=%ls missing action=%d buttons=%d\n",command,caption,dismiss,buttons.count);return 0;}
+ printf("dialog command=%d expected action=%d actual control=%d buttons=%d\n",command,dismiss,GetDlgCtrlID(action),buttons.count);
  SendMessageW(action,BM_CLICK,0,0);
  int stable=0;for(int i=0;i<300&&stable<2;i++){
   if(!IsWindow(probe.dialog)&&IsWindowEnabled(h)&&GetLastActivePopup(h)==h)stable++;else stable=0;Sleep(20);
