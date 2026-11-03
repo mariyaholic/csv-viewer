@@ -1,5 +1,12 @@
 # CSV viewer and preview
 
+## Proposed standalone desktop companion
+
+See [Standalone architecture](STANDALONE-ARCHITECTURE.md) for the owner-requested
+GUI proposal: no COM dependency, shared native presentation, separate worker-backed
+format adapters and staged acceptance gates. This is design work, not a shipped GUI.
+The proposal extends companion scope; existing Explorer security gates remain unchanged.
+
 ## Six fields
 
 1. **One-line pitch:** [inferred] Inspect a CSV in Explorer or a standalone window with an explicit account of parsing and scan coverage.

@@ -1,5 +1,105 @@
 # Status
 
+## Native themed controls — implementation and hosted verification
+
+Buttons now use the 0.2 design materials in the running apps, generated at build
+time from `design/system/tokens.json`. Standard Button HWNDs retain native class,
+activation, access keys and accessibility identity; NM_CUSTOMDRAW changes only
+pixels. Hover/pressed/focus/disabled states are distinct. Forced colors return
+the default OS renderer, not the authored palette. No unsupported menu/split
+commands were added. Reload/Cancel/Copy availability follows operation/selection.
+Toolbar sizing now includes focus/shadow breathing room; access keys are unique.
+
+Hosted verification: 146 Linux / 157 Windows/Wine tests pass.
+CSV ignored worker integration was explicitly enabled and passed on both targets.
+Native C smoke passes real worker values, Button class, ellipsis/unique access
+keys, Tab focus, Space activation, native BM_CLICK copy/cancel, command availability,
+six live themes and reload/exit. X11 captures verify actual rest/hover/pressed
+HWND pixels against generated materials (all six CSV themes plus Parquet Marigold).
+Strict workspace Clippy passes on Linux/Windows; offline licence check passes.
+Design validator/18 Python tests and formatting pass; source and design-input
+hashes are updated. Shared shell Rust source: 2116 raw physical lines,
+including build script and tests, excluding generated OUT_DIR code.
+CI now checks design tokens and includes an MSVC native-control smoke; Windows
+SDK resource discovery is explicit. Hosted CI result is reported in the PR, not
+assumed here. Actual Windows Narrator/UIA, DPI/monitor/high-contrast, font fallback,
+physical interaction and signed-release acceptance remain open.
+
+![Actual shared-shell native controls under Wine](docs/images/native-controls.png)
+
+
+## Button design contract 0.2.0
+
+Applied sourced label/ellipsis/hierarchy/menu/split conventions to all six design
+specimens. Added raised control faces, contact shadows, theme-specific bevel/frame
+materials and independent pressed/focus/disabled/busy examples. Runtime unchanged;
+these are proposed native-adapter visuals, not new native interaction evidence.
+Both token snapshots match. 18 design tests and 192 contrast checks pass; rendered
+pixel readbacks verify raised/pressed/disabled material in all six themes.
+See `design/system/BUTTONS.md` for sources and native acceptance requirements.
+
+
+## Design specimen copy cleanup
+
+Removed taglines and explanatory filler; retained functional labels/data/scope
+and error recovery. All six plates regenerated. Design validation: 17 tests
+and 150 contrast pairs pass. No native app behavior changed.
+
+## Extensible six-theme design system — 2026-11-02
+
+Added `design/system/` contract v0.1.0: reference → semantic → component aliases,
+shared typography/spacing/density/interaction rules, component anatomy and recipes
+for find/filter/sort, paging, schema, profiling, export, comparison and settings.
+Matching snapshots live in both viewer repos and the portfolio design directory.
+No Rust runtime, worker protocol, parser, dependency lock or native behavior changed.
+
+Verification: `python3 tools/validate_design.py --peer <sibling tokens.json>` passes
+six themes / 150 foreground-background contrast pairs, aliases, required states,
+typefaces, spacing, reduced-motion and current Rust palette parity. All 16
+adversarial unittest cases pass. `render_design.py` produces all six future-control
+plates; those are illustrative, not runtime/native acceptance screenshots.
+No Rust LOC changed. Native forced colors, text scaling, UIA and DPI acceptance
+remain required for future implementation; token checks are not accessibility proof.
+
+
+## Standalone desktop — implemented first slice (2026-11-02)
+
+This supersedes the architecture-only note below; it is not native release acceptance.
+
+- Native portable GUI plus companion worker; no COM registration, elevation or
+  terminal needed. Open/path/drop, reload/cancel, bounded owner-data sample table,
+  shown-row inspector/copy, in-window errors and six live theme choices.
+- Paper, Ink, PC-98, Doloris, Sumimi and derived Marigold. Uika OFL fonts are
+  process-private; standard controls retain system selection/button rendering.
+- Worker supervision includes a modal-independent deadline, cancellation,
+  kill-on-close Windows job, bounded transfer/response/display and private spools.
+  Reentrant paint reads a separate copied snapshot, not a mutable document borrow.
+- Shared shell source is byte-identical and content-pinned in SOURCE.json.
+  Existing worker wire protocols, CLI and Explorer/Low-IL behavior are unchanged.
+- Debug/unsigned Windows GNU portable ZIP built, extracted payload hashes checked,
+  actual app/fixture readback exercised under Wine. Both native smoke hosts verify
+  owner-data cells, selected-row inspection, clipboard, reload, six live themes,
+  close/reopen. Missing worker errors and read-only source hashes checked.
+- Native Windows dialog/drop, keyboard/Narrator/UIA, DPI/high contrast, font
+  fallback, clean-machine/MSVC/signing and owner acceptance remain OPEN. Wine
+  is corroborating evidence only. No release or new remote PR is claimed.
+- See docs/STANDALONE-USAGE.md for exact preview limits and follow-on milestones.
+
+CSV: 145 Linux / 156 Windows tests passed; one ignored integration was also
+explicitly enabled and passed on each target.
+Strict desktop/shell Windows Clippy and formatting pass. Final shared process
+tests were also rerun after fixture-isolation hardening. Full-suite logs and
+actual GUI captures live in the portfolio verification directory.
+
+## Standalone desktop architecture — proposed 2026-11-02
+
+- Added `docs/STANDALONE-ARCHITECTURE.md`: GUI boundaries, truthful sample/scan
+  capabilities, worker lifecycle, theme contract, staged delivery and acceptance.
+- Grounded in both engines, trading desk/mic-mute native UI and pinned MH Ticker
+  source plus Paper/PC-98 screenshots. No runtime dependencies or application code changed.
+- Documentation/source-reference checks passed; no GUI, benchmark, native accessibility
+  validation or new application test pass is claimed. Start implementation at S0.
+
 ## Latest hosted verification — 2026-11-02
 
 [measured] Current tracked RS source: 12,955 lines across 34 files,

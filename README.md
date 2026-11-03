@@ -2,6 +2,19 @@ Made by Maria
 
 # CSV viewer and preview
 
+## Standalone desktop preview
+
+A native Windows desktop companion is now implemented with **Paper, Ink, PC-98,
+Doloris, Sumimi and Marigold** themes. Extract its portable developer ZIP and run
+`csv-desktop.exe`; no COM registration is needed. This is a bounded, read-only
+sample viewer, not yet a full-file spreadsheet.
+
+[Run/build instructions, limits and remaining native acceptance](docs/STANDALONE-USAGE.md).
+
+[Six-theme design system and future-feature component contracts](design/system/README.md).
+
+
+
 Inspect a CSV in Explorer or a standalone window with an explicit account of parsing and scan coverage.
 
 This is free and open source (Apache-2.0). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
