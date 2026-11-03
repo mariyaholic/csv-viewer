@@ -272,13 +272,11 @@ impl PreviewSession {
         let thread_inner = inner.clone();
         let chunk = config.spool_chunk_bytes;
         let max_spool = config.max_spool_bytes;
-        thread::Builder::new()
-            .name("csv-preview-spool".to_string())
-            .spawn(move || {
-                let _alive = crate::lifecycle::LiveThread::enter();
-                spool_stream(thread_inner, source, head, path, max_spool, chunk)
-            })
-            .map_err(|error| PreviewError::Io(error.to_string()))?;
+        crate::lifecycle::spawn(
+            thread::Builder::new().name("csv-preview-spool".to_string()),
+            move || spool_stream(thread_inner, source, head, path, max_spool, chunk),
+        )
+        .map_err(|error| PreviewError::Io(error.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -321,6 +319,17 @@ impl PreviewSession {
         state.phase != SessionPhase::Scanning
     }
 
+    fn scheduling_failed(&self, error: std::io::Error) -> PreviewError {
+        let message = error.to_string();
+        let mut state = self.inner.state.lock().unwrap();
+        if state.phase == SessionPhase::Scanning {
+            self.inner.cancel.store(true, Ordering::SeqCst);
+            state.phase = SessionPhase::Failed;
+            state.error = Some(message.clone());
+            self.inner.changed.notify_all();
+        }
+        PreviewError::Io(message)
+    }
     pub fn start_full_scan(
         &self,
         backend: Arc<dyn FullScanBackend>,
@@ -345,10 +354,9 @@ impl PreviewSession {
         };
 
         let thread_inner = self.inner.clone();
-        thread::Builder::new()
-            .name("csv-preview-scan".to_string())
-            .spawn(move || {
-                let _alive = crate::lifecycle::LiveThread::enter();
+        crate::lifecycle::spawn(
+            thread::Builder::new().name("csv-preview-scan".to_string()),
+            move || {
                 let result =
                     backend.scan(&spool, &request, &thread_inner.cancel, &mut |progress| {
                         let mut state = thread_inner.state.lock().unwrap();
@@ -375,14 +383,14 @@ impl PreviewSession {
                     }
                 }
                 thread_inner.changed.notify_all();
-            })
-            .map_err(|error| PreviewError::Io(error.to_string()))?;
+            },
+        )
+        .map_err(|error| self.scheduling_failed(error))?;
 
         let supervisor_inner = self.inner.clone();
-        thread::Builder::new()
-            .name("csv-preview-timeout".to_string())
-            .spawn(move || {
-                let _alive = crate::lifecycle::LiveThread::enter();
+        crate::lifecycle::spawn(
+            thread::Builder::new().name("csv-preview-timeout".to_string()),
+            move || {
                 let deadline = Instant::now() + timeout;
                 let mut state = supervisor_inner.state.lock().unwrap();
                 loop {
@@ -403,8 +411,9 @@ impl PreviewSession {
                         .unwrap();
                     state = next;
                 }
-            })
-            .map_err(|error| PreviewError::Io(error.to_string()))?;
+            },
+        )
+        .map_err(|error| self.scheduling_failed(error))?;
         Ok(())
     }
 
@@ -425,8 +434,7 @@ impl PreviewSession {
 
 impl Drop for PreviewSession {
     fn drop(&mut self) {
-        self.inner.cancel.store(true, Ordering::SeqCst);
-        self.inner.changed.notify_all();
+        self.cancel();
     }
 }
 
@@ -549,6 +557,38 @@ fn write_spool<R: Read>(
 #[cfg(test)]
 mod owned_source_tests {
     use super::*;
+    fn ready_session() -> PreviewSession {
+        let session = PreviewSession::start(
+            std::io::Cursor::new(b"name\nvalue\n".to_vec()),
+            Some(11),
+            &ScanRequest::preview(),
+            PreviewConfig::default(),
+        )
+        .unwrap();
+        assert!(session.wait_for_spool(Duration::from_secs(5)));
+        session
+    }
+    #[test]
+    fn scheduling_failure_fails_and_wakes_scanning_without_overwriting_terminal_state() {
+        let session = ready_session();
+        session.inner.state.lock().unwrap().phase = SessionPhase::Scanning;
+        session.scheduling_failed(std::io::Error::other("thread creation failed"));
+        assert_eq!(session.snapshot().phase, SessionPhase::Failed);
+        assert!(session.wait_for_scan(Duration::ZERO));
+        assert!(session.inner.cancel.load(Ordering::SeqCst));
+        session.inner.state.lock().unwrap().phase = SessionPhase::Complete;
+        session.scheduling_failed(std::io::Error::other("late failure"));
+        assert_eq!(session.snapshot().phase, SessionPhase::Complete);
+    }
+    #[test]
+    fn dropping_a_session_wakes_supervision_into_a_terminal_state() {
+        let session = ready_session();
+        let inner = session.inner.clone();
+        inner.state.lock().unwrap().phase = SessionPhase::Scanning;
+        drop(session);
+        assert_eq!(inner.state.lock().unwrap().phase, SessionPhase::Cancelled);
+        assert!(inner.cancel.load(Ordering::SeqCst));
+    }
     #[test]
     fn copy_is_bounded_and_rewound() {
         let mut file = copy_owned_source(&b"abcdef"[..], 3).unwrap();
