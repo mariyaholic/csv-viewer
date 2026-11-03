@@ -1,7 +1,8 @@
 # Button contract — 0.2.0
 
-Applies to all six design-system specimens and future native adapters. These
-plates do not implement button interaction or change the running apps.
+Applies to all six design-system specimens and the native button adapter. The
+apps now use generated materials on standard Button HWNDs via NM_CUSTOMDRAW.
+Menu/split examples remain specimens; no unsupported commands were added.
 
 ## Conventions adopted
 

@@ -1,5 +1,33 @@
 # Status
 
+## Native themed controls — implementation and hosted verification
+
+Buttons now use the 0.2 design materials in the running apps, generated at build
+time from `design/system/tokens.json`. Standard Button HWNDs retain native class,
+activation, access keys and accessibility identity; NM_CUSTOMDRAW changes only
+pixels. Hover/pressed/focus/disabled states are distinct. Forced colors return
+the default OS renderer, not the authored palette. No unsupported menu/split
+commands were added. Reload/Cancel/Copy availability follows operation/selection.
+Toolbar sizing now includes focus/shadow breathing room; access keys are unique.
+
+Hosted verification: 146 Linux / 157 Windows/Wine tests pass.
+CSV ignored worker integration was explicitly enabled and passed on both targets.
+Native C smoke passes real worker values, Button class, ellipsis/unique access
+keys, Tab focus, Space activation, native BM_CLICK copy/cancel, command availability,
+six live themes and reload/exit. X11 captures verify actual rest/hover/pressed
+HWND pixels against generated materials (all six CSV themes plus Parquet Marigold).
+Strict workspace Clippy passes on Linux/Windows; offline licence check passes.
+Design validator/18 Python tests and formatting pass; source and design-input
+hashes are updated. Shared shell Rust source: 2116 raw physical lines,
+including build script and tests, excluding generated OUT_DIR code.
+CI now checks design tokens and includes an MSVC native-control smoke; Windows
+SDK resource discovery is explicit. Hosted CI result is reported in the PR, not
+assumed here. Actual Windows Narrator/UIA, DPI/monitor/high-contrast, font fallback,
+physical interaction and signed-release acceptance remain open.
+
+![Actual shared-shell native controls under Wine](docs/images/native-controls.png)
+
+
 ## Button design contract 0.2.0
 
 Applied sourced label/ellipsis/hierarchy/menu/split conventions to all six design

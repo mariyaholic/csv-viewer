@@ -10,4 +10,5 @@ crates/csv-core/tests/fixtures/** -text
 
 # Shared-shell content pins must survive Windows checkout.
 crates/viewer-shell/** text eol=lf
+design/system/*.json text eol=lf
 *.ttf binary

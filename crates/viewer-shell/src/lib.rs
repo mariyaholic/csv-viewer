@@ -150,6 +150,7 @@ pub fn display_text(s: &str, limit: usize) -> String {
     }
     out
 }
+pub mod buttons;
 pub mod supervisor;
 #[cfg(windows)]
 pub mod win32;
