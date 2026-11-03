@@ -28,9 +28,11 @@ functional contrast adaptations, not a replacement for Uika's lining primitive.
 Canonical design source: `qol-portfolio/design/viewer-system/`. Matching portable
 snapshots live at `design/system/` in both viewer repositories. Update all three
 in one change; the validation tool accepts another token file for parity checks.
-No runtime Rust source or app behavior is changed by this design-system package.
-A later implementation should generate native color bindings from this contract,
-then retire duplicated literals only after parity tests and native acceptance.
+The native button adapter now generates its material bindings from this contract
+at build time. Standard Button HWNDs keep native activation, access keys and
+accessibility identity; NM_CUSTOMDRAW supplies the authored faces. Forced colors
+use the default OS renderer. Other extended components remain proposals; their
+implementation still requires parity tests and native acceptance.
 
 ## Foundations
 

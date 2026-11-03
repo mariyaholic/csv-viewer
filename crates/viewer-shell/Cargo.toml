@@ -7,3 +7,6 @@ authors = ["Maria"]
 
 [dependencies]
 tempfile = "=3.10.1"
+
+[build-dependencies]
+serde_json = "=1.0.154"

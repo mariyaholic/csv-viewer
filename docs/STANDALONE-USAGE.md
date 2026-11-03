@@ -20,9 +20,15 @@ pasting untrusted text into other applications remains the recipient's responsib
 
 The theme selector changes Paper, Ink, PC-98, Doloris, Sumimi and Marigold on the
 loaded document. `--theme doloris` (or another lower-case ID) selects a launch theme.
-Theme choice is session-only in this slice. Standard native controls and system
-selection colours are intentional, not a pixel-identical reproduction of mockups.
-High contrast overrides authored colours. Paper/Ink use installed UI/mono fonts;
+Theme choice is session-only in this slice. Buttons retain standard native HWNDs
+with generated theme faces via NM_CUSTOMDRAW (not BS_OWNERDRAW). Rest/hover/pressed,
+focus and disabled state remain distinct; no theme changes the command behavior.
+The 40 DIP button hit box includes reserved focus/shadow space around the material.
+Native menus, combo boxes and system selection colours remain OS-drawn.
+High contrast uses the default native button renderer and overrides authored
+colours. Reload is unavailable during loading; Cancel is available only during
+an operation; Copy requires a selected row. Access keys are unique.
+Paper/Ink use installed UI/mono fonts;
 PC-98 requests MS Gothic with Windows fallback. Uika designs privately load Cinzel,
 Outfit and JetBrains Mono from `fonts/`; their OFL texts are included. No font is
 installed globally and there are no runtime font downloads.
@@ -79,6 +85,26 @@ not been exercised here. Existing CLI/DLL registration commands remain unchanged
 The vendored `crates/viewer-shell` source is version 0.1.0 with exact file hashes
 in `crates/viewer-shell/SOURCE.json`. It has no COM dependency or sibling checkout
 path dependency. Review/synchronize source explicitly across both repositories.
+
+## Native control smoke host
+
+After a debug portable build, a MinGW developer can run:
+
+```sh
+mkdir -p target
+x86_64-w64-mingw32-gcc -municode -O2 -Wall -Werror crates/viewer-shell/tests/native-smoke.c -o target/native-smoke.exe -lcomctl32 -lgdi32 -luser32
+wine target/native-smoke.exe 'dist\standalone\csv-desktop.exe' 'crates\csv-core\tests\fixtures\golden.csv' CSV target '007'
+```
+
+The host verifies real worker values, standard Button identity, unique access keys,
+Tab focus, native Space activation, ready/busy/selection availability, BM_CLICK
+copy/cancel, six live themes, reload and exit. Capture helper modes `--probe`,
+`--press`, `--release`, `--hover`, `--away`, `--close` take `CSV` as the last argument. Press/release
+uses BM_SETSTATE for deterministic native pressed-paint captures, not a claim of
+physical pointer automation. Narrator/UIA and actual Windows forced-color/DPI
+acceptance are still separate requirements.
+
+![Actual shared-shell Button HWNDs under Wine](images/native-controls.png)
 
 ## Acceptance still required
 

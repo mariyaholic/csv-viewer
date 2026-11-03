@@ -3,6 +3,7 @@
 //! The table is owner-data: notifications read only the bounded retained sample.
 #![allow(non_snake_case)]
 use crate::{
+    buttons::{material, visual, ButtonMaterial, ButtonState},
     display_text,
     supervisor::{worker_path, Adapter, Task},
     Document, THEMES,
@@ -97,6 +98,16 @@ struct LvItem {
     col_ptr: *mut u32,
     col_fmt: *mut i32,
     group_index: i32,
+}
+#[repr(C)]
+struct CustomDraw {
+    hdr: NmHdr,
+    stage: u32,
+    dc: H,
+    rect: Rect,
+    item: usize,
+    state: u32,
+    param: isize,
 }
 #[repr(C)]
 struct LvInfo {
@@ -197,6 +208,10 @@ extern "system" {
     fn GetKeyState(key: i32) -> i16;
     fn SetFocus(h: H) -> H;
     fn EnableWindow(h: H, enable: i32) -> i32;
+    fn IsWindowEnabled(h: H) -> i32;
+    fn GetFocus() -> H;
+    fn GetWindowTextW(h: H, text: *mut u16, max: i32) -> i32;
+    fn DrawTextW(dc: H, text: *const u16, count: i32, rect: *mut Rect, flags: u32) -> i32;
     fn MessageBoxW(h: H, text: *const u16, title: *const u16, flags: u32) -> i32;
     fn FillRect(dc: H, rect: *const Rect, brush: H) -> i32;
     fn GetSysColor(index: i32) -> u32;
@@ -220,6 +235,21 @@ extern "system" {
 #[link(name = "gdi32")]
 extern "system" {
     fn CreateSolidBrush(color: u32) -> H;
+    fn SelectObject(dc: H, object: H) -> H;
+    fn GetStockObject(index: i32) -> H;
+    fn SaveDC(dc: H) -> i32;
+    fn RestoreDC(dc: H, saved: i32) -> i32;
+    fn SetBkMode(dc: H, mode: i32) -> i32;
+    fn RoundRect(
+        dc: H,
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
+    fn Rectangle(dc: H, left: i32, top: i32, right: i32, bottom: i32) -> i32;
     fn DeleteObject(h: H) -> i32;
     fn CreateFontW(
         height: i32,
@@ -268,6 +298,9 @@ unsafe fn settext(h: H, s: &str) {
 }
 #[derive(Clone, Copy, Default)]
 struct Paint {
+    buttons: [H; 5],
+    material: ButtonMaterial,
+    forced: bool,
     details: H,
     title: H,
     status: H,
@@ -321,7 +354,42 @@ struct Ui {
 }
 impl Ui {
     fn new(adapter: Adapter, theme: usize) -> Self {
-        Self{paint:ptr::null(),dirty:true,adapter,doc:Document{status:"Open or drop one local file. Read-only; no COM registration needed. First slice: 64 MiB source limit.".into(),..Document::default()},path:None,task:None,theme,dpi:96,window:0,open:0,reload:0,cancel:0,combo:0,about:0,copy:0,title:0,status:0,table:0,details:0,font:0,mono:0,heading:0,brush:0,panel_brush:0,bg:0,panel:0,fg:0,accent:0,info:0,font_files:Vec::new(),columns:0}
+        Self {
+            paint: ptr::null(),
+            dirty: true,
+            adapter,
+            doc: Document {
+                status: "Open or drop a file. Limit: 64 MiB.".into(),
+                ..Document::default()
+            },
+            path: None,
+            task: None,
+            theme,
+            dpi: 96,
+            window: 0,
+            open: 0,
+            reload: 0,
+            cancel: 0,
+            combo: 0,
+            about: 0,
+            copy: 0,
+            title: 0,
+            status: 0,
+            table: 0,
+            details: 0,
+            font: 0,
+            mono: 0,
+            heading: 0,
+            brush: 0,
+            panel_brush: 0,
+            bg: 0,
+            panel: 0,
+            fg: 0,
+            accent: 0,
+            info: 0,
+            font_files: Vec::new(),
+            columns: 0,
+        }
     }
     unsafe fn child(&self, class: &str, label: &str, style: u32, id: isize) -> H {
         CreateWindowExW(
@@ -345,7 +413,7 @@ impl Ui {
         self.cancel = self.child("BUTTON", "&Cancel", 0x10000, 103);
         self.combo = self.child("COMBOBOX", "Theme", 0x10000 | 0x200000 | 3, 104);
         self.about = self.child("BUTTON", "&About", 0x10000, 105);
-        self.copy = self.child("BUTTON", "Copy shown &row", 0x10000, 106);
+        self.copy = self.child("BUTTON", "Copy &shown row", 0x10000, 106);
         self.title = self.child("STATIC", self.adapter.title, 0, 107);
         self.status = self.child("STATIC", &self.doc.status, 0, 108);
         self.table = self.child(
@@ -355,7 +423,12 @@ impl Ui {
             109,
         );
         SendMessageW(self.table, 0x1036, 0, 0x20 | 0x10000); // full row selection and double buffer
-        self.details=self.child("EDIT","Open a file to view coverage and structured metadata.\r\n\r\nSix base designs; all data stays local.\r\n\r\nCtrl+O: Open   F5: Reload   Esc: Cancel\r\nCtrl+C: Copy shown row (table focus)\r\nTab: move between controls",0x10000|0x200000|0x100000|4|0x800|0x40,110);
+        self.details = self.child(
+            "EDIT",
+            "No file selected.",
+            0x10000 | 0x200000 | 0x100000 | 4 | 0x800 | 0x40,
+            110,
+        );
         for t in THEMES {
             SendMessageW(self.combo, 0x143, 0, wide(t.name).as_ptr() as isize);
         }
@@ -364,6 +437,7 @@ impl Ui {
         SetTimer(self.window, 1, 80, 0);
         self.apply_theme();
         self.layout();
+        self.refresh_status();
         SetFocus(self.open);
     }
     unsafe fn layout(&self) {
@@ -373,19 +447,19 @@ impl Ui {
         let w = r.right;
         let h = r.bottom;
         for (control, x, width) in [
-            (self.open, 16, 115),
-            (self.reload, 139, 85),
-            (self.cancel, 232, 85),
-            (self.combo, 337, 145),
-            (self.copy, 500, 145),
-            (self.about, 663, 80),
+            (self.open, 16, 132),
+            (self.reload, 156, 120),
+            (self.cancel, 284, 120),
+            (self.combo, 420, 145),
+            (self.copy, 581, 160),
+            (self.about, 757, 120),
         ] {
             MoveWindow(
                 control,
                 q(x),
                 q(16),
                 q(width),
-                q(if control == self.combo { 230 } else { 32 }),
+                q(if control == self.combo { 230 } else { 40 }),
                 1,
             );
         }
@@ -456,6 +530,9 @@ impl Ui {
             0,
         );
         (*self.paint).set(Paint {
+            buttons: [self.open, self.reload, self.cancel, self.copy, self.about],
+            material: material(self.theme),
+            forced,
             details: self.details,
             title: self.title,
             status: self.status,
@@ -604,7 +681,14 @@ impl Ui {
         self.dirty = true;
         settext(self.status, &self.doc.status);
         EnableWindow(self.cancel, self.task.is_some() as i32);
-        EnableWindow(self.copy, self.doc.table.is_some() as i32);
+        EnableWindow(
+            self.reload,
+            (self.path.is_some() && self.task.is_none()) as i32,
+        );
+        EnableWindow(
+            self.copy,
+            (self.doc.table.is_some() && self.selected().is_some()) as i32,
+        );
     }
     unsafe fn populate(&mut self) {
         SendMessageW(self.table, 0x102f, 0, 0);
@@ -702,11 +786,13 @@ impl Ui {
         match id {
             101 => self.open_dialog(),
             102 => {
-                if let Some(p) = self.path.clone() {
-                    self.open_path(p);
+                if self.task.is_none() {
+                    if let Some(p) = self.path.clone() {
+                        self.open_path(p);
+                    }
                 }
             }
-            103 => {
+            103 if self.task.is_some() => {
                 self.task.take();
                 self.doc.begin();
                 self.doc.status = "Cancelled. Previous preview, if any, remains visible.".into();
@@ -727,6 +813,153 @@ impl Ui {
         }
     }
 }
+// Custom drawing changes only pixels; the HWND remains a standard push button.
+// Keyboard activation, access keys, UIA identity and disabled state stay native.
+unsafe fn rounded(dc: H, r: Rect, rgb: u32, radius: i32) {
+    let brush = CreateSolidBrush(rgb);
+    if brush == 0 {
+        return;
+    }
+    let old_brush = SelectObject(dc, brush);
+    let old_pen = SelectObject(dc, GetStockObject(8)); // NULL_PEN
+    if radius == 0 {
+        Rectangle(dc, r.left, r.top, r.right, r.bottom);
+    } else {
+        RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
+    }
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    DeleteObject(brush);
+}
+fn inset(r: Rect, n: i32) -> Rect {
+    Rect {
+        left: r.left + n,
+        top: r.top + n,
+        right: r.right - n,
+        bottom: r.bottom - n,
+    }
+}
+unsafe fn paint_button(cd: &CustomDraw, p: Paint) -> isize {
+    let disabled = cd.state & 4 != 0 || IsWindowEnabled(cd.hdr.hwnd) == 0;
+    let state = if disabled {
+        ButtonState::Disabled
+    } else if cd.state & 1 != 0 {
+        ButtonState::Pressed
+    } else if cd.state & 0x40 != 0 {
+        ButtonState::Hot
+    } else {
+        ButtonState::Rest
+    };
+    let Some(v) = visual(p.material, state, p.forced) else {
+        return 0;
+    };
+    let saved = SaveDC(cd.dc);
+    if saved == 0 {
+        return 0;
+    }
+    let q = |n: i32| (n * p.dpi + 48) / 96;
+    let r = cd.rect;
+    FillRect(cd.dc, &r, p.brush);
+    let ui_state = SendMessageW(cd.hdr.hwnd, 0x129, 0, 0);
+    if !disabled && (cd.state & 0x10 != 0 || GetFocus() == cd.hdr.hwnd) && ui_state & 1 == 0 {
+        rounded(cd.dc, r, color(p.material.focus), q(p.material.radius + 3));
+        rounded(cd.dc, inset(r, q(2)), p.bg, q(p.material.radius + 1));
+    }
+    let mut face = inset(r, q(4));
+    face.bottom -= q(v.elevation);
+    if v.elevation > 0 {
+        let shadow = Rect {
+            top: face.top + q(v.elevation),
+            bottom: face.bottom + q(v.elevation),
+            ..face
+        };
+        rounded(
+            cd.dc,
+            shadow,
+            color(p.material.shadow),
+            q(p.material.radius),
+        );
+    }
+    face.top += q(v.offset);
+    face.bottom += q(v.offset);
+    rounded(cd.dc, face, color(p.material.border), q(p.material.radius));
+    let body = inset(face, q(1));
+    rounded(
+        cd.dc,
+        body,
+        color(v.face),
+        q(p.material.radius.saturating_sub(1)),
+    );
+    if !disabled {
+        let top = Rect {
+            left: face.left + q(p.material.radius + 2),
+            top: face.top + q(2),
+            right: face.right - q(p.material.radius + 2),
+            bottom: face.top + q(3),
+        };
+        let bottom = Rect {
+            top: face.bottom - q(3),
+            bottom: face.bottom - q(2),
+            ..top
+        };
+        rounded(cd.dc, top, color(v.highlight), 0);
+        rounded(cd.dc, bottom, color(v.shadow), 0);
+        if p.material.profile == 1 {
+            rounded(
+                cd.dc,
+                Rect {
+                    left: face.left + q(2),
+                    top: face.top + q(2),
+                    right: face.left + q(3),
+                    bottom: face.bottom - q(2),
+                },
+                color(v.highlight),
+                0,
+            );
+            rounded(
+                cd.dc,
+                Rect {
+                    left: face.right - q(3),
+                    top: face.top + q(2),
+                    right: face.right - q(2),
+                    bottom: face.bottom - q(2),
+                },
+                color(v.shadow),
+                0,
+            );
+        } else if p.material.profile == 2 {
+            let frame = inset(face, q(3));
+            rounded(cd.dc, frame, color(v.highlight), q(1));
+            rounded(cd.dc, inset(frame, q(1)), color(v.face), q(1));
+        } else if p.material.profile == 3 && state != ButtonState::Pressed {
+            rounded(
+                cd.dc,
+                Rect {
+                    top: face.bottom - q(5),
+                    bottom: face.bottom - q(4),
+                    ..bottom
+                },
+                color(v.highlight),
+                0,
+            );
+        }
+    }
+    let mut label = [0u16; 256];
+    let count = GetWindowTextW(cd.hdr.hwnd, label.as_mut_ptr(), label.len() as i32);
+    let font = SendMessageW(cd.hdr.hwnd, 0x31, 0, 0);
+    if font != 0 {
+        SelectObject(cd.dc, font);
+    }
+    SetTextColor(cd.dc, color(v.text));
+    SetBkMode(cd.dc, 1);
+    let mut flags = 1 | 4 | 0x20; // centered, vertically centered, single line; native mnemonics
+    if ui_state & 2 != 0 {
+        flags |= 0x100000;
+    }
+    DrawTextW(cd.dc, label.as_ptr(), count, &mut face, flags);
+    RestoreDC(cd.dc, saved);
+    4 // CDRF_SKIPDEFAULT
+}
 unsafe extern "system" fn wndproc(h: H, m: u32, w: usize, l: isize) -> isize {
     if m == 0x81 {
         let c = &*(l as *const Create);
@@ -744,6 +977,16 @@ unsafe extern "system" fn wndproc(h: H, m: u32, w: usize, l: isize) -> isize {
     }
     let host = &*p;
     let paint = host.paint.get();
+    if m == 0x4e && l != 0 {
+        let nm = &*(l as *const NmHdr);
+        if nm.code == (-12i32) as u32 && paint.buttons.contains(&nm.hwnd) {
+            let cd = &*(l as *const CustomDraw);
+            if cd.stage == 1 && !paint.forced {
+                return paint_button(cd, paint);
+            }
+            return 0; // OS rendering for forced colors, and all other drawing stages.
+        }
+    }
     if paint.brush != 0 && (m == 0x138 || m == 0x133) {
         SetTextColor(
             w as H,
@@ -803,7 +1046,7 @@ unsafe extern "system" fn wndproc(h: H, m: u32, w: usize, l: isize) -> isize {
         0x24 => {
             let mm = &mut *(l as *mut MinMax);
             mm.min_track = Point {
-                x: 850 * s.dpi / 96,
+                x: 940 * s.dpi / 96,
                 y: 440 * s.dpi / 96,
             };
             0
@@ -877,6 +1120,7 @@ unsafe extern "system" fn wndproc(h: H, m: u32, w: usize, l: isize) -> isize {
                 0
             } else if nm.hwnd == s.table && nm.code == (-101i32) as u32 {
                 s.inspect_row();
+                EnableWindow(s.copy, s.selected().is_some() as i32);
                 0
             } else {
                 DefWindowProcW(h, m, w, l)
@@ -943,7 +1187,7 @@ pub fn run(adapter: Adapter, args: Vec<std::ffi::OsString>) -> Result<(), String
         SetProcessDpiAwarenessContext(-4);
         InitCommonControlsEx(&CommonControls {
             size: size_of::<CommonControls>() as u32,
-            classes: 1,
+            classes: 1 | 0x4000,
         });
         let instance = GetModuleHandleW(ptr::null());
         let class = wide(&format!(
