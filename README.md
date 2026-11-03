@@ -11,6 +11,8 @@ sample viewer, not yet a full-file spreadsheet.
 
 [Run/build instructions, limits and remaining native acceptance](docs/STANDALONE-USAGE.md).
 
+[Six-theme design system and future-feature component contracts](design/system/README.md).
+
 
 
 Inspect a CSV in Explorer or a standalone window with an explicit account of parsing and scan coverage.
