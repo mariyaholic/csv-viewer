@@ -1,5 +1,16 @@
 # Status
 
+## Button design contract 0.2.0
+
+Applied sourced label/ellipsis/hierarchy/menu/split conventions to all six design
+specimens. Added raised control faces, contact shadows, theme-specific bevel/frame
+materials and independent pressed/focus/disabled/busy examples. Runtime unchanged;
+these are proposed native-adapter visuals, not new native interaction evidence.
+Both token snapshots match. 18 design tests and 192 contrast checks pass; rendered
+pixel readbacks verify raised/pressed/disabled material in all six themes.
+See `design/system/BUTTONS.md` for sources and native acceptance requirements.
+
+
 ## Design specimen copy cleanup
 
 Removed taglines and explanatory filler; retained functional labels/data/scope

@@ -16,6 +16,8 @@ ROLES = {
     'border.control', 'border.decorative', 'focus.ring', 'selection.fill',
     'selection.text', 'selection.outline', 'action.fill', 'action.text',
     'status.success', 'status.warning', 'status.error', 'ornament.trim',
+    'control.highlight', 'control.shadow',
+    'surface.control', 'surface.control-hover', 'surface.control-pressed',
 }
 STATES = {'empty', 'loading', 'ready', 'partial', 'error', 'cancelled', 'stale'}
 CONTROL_STATES = {'default', 'hover', 'pressed', 'focused', 'disabled', 'busy', 'invalid'}
@@ -100,6 +102,9 @@ def validate(data):
             for fg in ('text.primary', 'text.secondary', 'text.info',
                        'status.success', 'status.warning', 'status.error'):
                 pairs.append((fg, bg, 4.5))
+        for bg in ('surface.control', 'surface.control-hover', 'surface.control-pressed'):
+            pairs.extend([('text.primary', bg, 4.5), ('focus.ring', bg, 3)])
+        pairs.append(('text.secondary', 'surface.control', 4.5))
         pairs += [
             ('text.primary', 'surface.input', 4.5),
             ('text.secondary', 'surface.input', 4.5),
