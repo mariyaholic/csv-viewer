@@ -24,7 +24,7 @@ Commands: `cargo test --locked --offline --workspace` on both targets (Windows v
 Wine); CSV also `cargo test -p csv-preview --test session -- --ignored`. Formatting,
 strict Clippy (CSV workspace; Parquet shell/desktop `--no-deps`) on both targets,
 18 design tests / 192 contrast pairs, offline licence inventories, debug portable
-builds and checksum checks pass. Shared shell: 3250 raw Rust lines including
+builds and checksum checks pass. Shared shell: 3299 raw Rust lines including
 build script and Rust tests. Existing inherited Parquet core warnings are not
 claimed clean.
 
