@@ -1,5 +1,45 @@
 # Status
 
+## Everyday usability — 2026-11-03
+
+Theme, normal window size/position, DPI and maximized state now survive normal
+close/relaunch independently per viewer. Minimized windows reopen restored; saved
+bounds fit the nearest current monitor/work area with DPI-aware size scaling.
+Preferences are atomic, bounded (16 KiB), per-user appearance-only JSON; no source
+paths, search history or data are saved. Explicit `--theme` takes precedence.
+Unreadable/future settings leave the saved file untouched; Help offers explicit
+reset consent. Save failures do not alter source files. Simultaneous closes use
+bounded Windows sharing/rename retries, never an in-place fallback write.
+
+New first-open/drop guidance, visible Clear search, actionable no-match/error
+states, row-selection guidance, clipboard-error feedback, a labeled theme selector
+and Help/F1 make the primary workflows discoverable without a terminal. Native
+window/taskbar/Alt+Tab captions now identify the viewer and current file. Removed
+stale About claims about 64 MiB/session-only/no paging. Original six palettes,
+native standard controls, bounded browsing and Explorer/COM/CLI remain intact.
+No associations, defaults, existing legal notices or agent instructions changed.
+
+Local verification: **172 Linux / 184 Windows-GNU/Wine workspace tests passed**. Plus one explicitly enabled CSV worker integration on each target.
+Commands: `cargo test --locked --offline --workspace` on both targets (Windows via
+Wine); CSV also `cargo test -p csv-preview --test session -- --ignored`. Formatting,
+strict Clippy (CSV workspace; Parquet shell/desktop `--no-deps`) on both targets,
+18 design tests / 192 contrast pairs, offline licence inventories, debug portable
+builds and checksum checks pass. Shared shell: 3299 raw Rust lines including
+build script and Rust tests. Existing inherited Parquet core warnings are not
+claimed clean.
+
+Expanded native C GUI smoke checks real process restart, normal/maximized/minimized
+bounds, theme precedence, welcome/no automatic file reopen, Open dialog cancel,
+Help/F1/credit, malformed/future fallback and explicit repair, plus all prior
+paging/search, source-row, clipboard, keyboard and theme assertions. Private test
+roots avoid changing actual user preferences. Evidence is retained in portfolio
+`verification/everyday-usability/`; hosted Windows/MSVC status is reported on the
+PR, not inferred from Wine. No subagents.
+
+Owner Windows Explorer/default-app, Narrator/UIA, real multi-monitor/DPI/contrast
+and physical-input acceptance remain pending. Default-app registration and release
+signing remain separate. Storage and recovery details: [usage guide](docs/STANDALONE-USAGE.md).
+
 ## Large-file paging/search — priority implementation
 
 Implemented read-only Previous/Next, bounded literal search beyond the first 200
