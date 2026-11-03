@@ -39,6 +39,219 @@ use crate::types::{
 };
 use crate::warnings::{WarningCode, WarningCollector};
 
+/// Desktop row window. Source row indices exclude the detected header.
+#[derive(Debug)]
+pub struct BrowsePage {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub source_rows: Vec<u64>,
+    pub next: Option<u64>,
+    pub next_byte: Option<u64>,
+    pub scanned_to: u64,
+    pub notes: String,
+}
+/// Streaming, bounded row window without retaining the prefix.
+pub fn browse_page<R: Read + io::Seek>(
+    source: R,
+    offset: u64,
+    limit: usize,
+    query: &str,
+) -> Result<BrowsePage, ScanError> {
+    browse_page_at(source, offset, limit, query, None)
+}
+/// Resume a UTF-8 window at a previously emitted record boundary. Callers must
+/// bind checkpoints to unchanged source metadata. Other encodings replay the
+/// prefix; decoded UTF-8 positions must never be treated as source byte offsets.
+pub fn browse_page_at<R: Read + io::Seek>(
+    mut source: R,
+    offset: u64,
+    limit: usize,
+    query: &str,
+    byte: Option<u64>,
+) -> Result<BrowsePage, ScanError> {
+    if limit == 0 || limit > 200 || query.len() > 1024 {
+        return Err(ScanError::InvalidRequest(
+            "Invalid page size or search length".into(),
+        ));
+    }
+    source.seek(io::SeekFrom::Start(0))?;
+    let mut head = Vec::new();
+    source
+        .by_ref()
+        .take(SAMPLE_BYTES as u64)
+        .read_to_end(&mut head)?;
+    let encoding = detect_encoding(&head).kind;
+    let (sample, _) = decode_sample(&head, encoding);
+    let dialect = detect_dialect(&sample).dialect;
+    let sample = read_sample_records(&sample, &dialect, 50);
+    let header = detect_header(&sample);
+    let utf8 = encoding == crate::encoding::EncodingKind::Utf8;
+    if byte.is_some() && !utf8 {
+        return Err(ScanError::InvalidRequest(
+            "Byte checkpoints require UTF-8".into(),
+        ));
+    }
+    let columns = (0..sample.iter().map(|r| r.len()).max().unwrap_or(0).min(64))
+        .map(|i| {
+            if header {
+                sample
+                    .first()
+                    .and_then(|r| r.get(i))
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| format!("Column {}", i + 1))
+            } else {
+                format!("Column {}", i + 1)
+            }
+        })
+        .collect();
+    let indexed = byte.is_some();
+    let bom = if utf8 && head.starts_with(b"\xef\xbb\xbf") {
+        3
+    } else {
+        0
+    };
+    if byte.is_none() {
+        head.drain(..bom);
+    }
+    let origin = byte.unwrap_or(bom as u64);
+    let raw: Box<dyn Read + '_> = if let Some(byte) = byte {
+        source.seek(io::SeekFrom::Start(byte))?;
+        // Prime the CSV BOM recognizer using a discarded record. A real U+FEFF
+        // at the beginning of a later data record must not be stripped as a BOM.
+        Box::new(io::Cursor::new(b"X\n").chain(source))
+    } else {
+        Box::new(io::Cursor::new(head).chain(source))
+    };
+    let decoded: Box<dyn Read + '_> = if utf8 {
+        raw
+    } else {
+        Box::new(DecodeReader::new(raw, encoding, DecodeStats::default()))
+    };
+    let malformed = Arc::new(AtomicBool::new(false));
+    let cancelled = AtomicBool::new(false);
+    let halt = Arc::new(AtomicU8::new(HALT_NONE));
+    let guarded = QuoteGuard::new(
+        decoded,
+        &dialect,
+        malformed.clone(),
+        ReaderBounds {
+            halt: halt.clone(),
+            cancel: &cancelled,
+            started: Instant::now(),
+            deadline: Some(Duration::from_secs(20)),
+            field_budget: Some(16 * 1024),
+            record_budget: Some(1024 * 1024),
+        },
+    );
+    let mut reader = ReaderBuilder::new()
+        .delimiter(dialect.delimiter as u8)
+        .quote(dialect.quote as u8)
+        .double_quote(dialect.double_quote)
+        .escape(dialect.escape.map(|c| c as u8))
+        .has_headers(false)
+        .flexible(true)
+        .buffer_capacity(1024)
+        .from_reader(guarded);
+    let mut record = StringRecord::new();
+    if indexed {
+        reader
+            .read_record(&mut record)
+            .map_err(|e| ScanError::InvalidRequest(e.to_string()))?;
+    }
+    let mut page = BrowsePage {
+        columns,
+        rows: Vec::new(),
+        source_rows: Vec::new(),
+        next: None,
+        next_byte: None,
+        scanned_to: offset,
+        notes: format!(
+            "Encoding: {}; delimiter: {:?}; automatic header: {}; first 64 columns. {}",
+            encoding.label(),
+            dialect.delimiter,
+            header,
+            if utf8 {
+                "UTF-8 record checkpoints."
+            } else {
+                "Decoded prefix replay; later pages may reach the 20-second budget."
+            }
+        ),
+    };
+    let needle = query.to_lowercase();
+    let mut cursor = if indexed { offset } else { 0 };
+    let mut retained_bytes = 0usize;
+    let mut first = !indexed;
+    let mut next_byte = if utf8 { Some(origin) } else { None };
+    loop {
+        let start_byte = next_byte;
+        match reader.read_record(&mut record) {
+            Ok(false) => {
+                if malformed.load(Ordering::Relaxed) {
+                    return Err(ScanError::InvalidRequest("Unclosed quoted record".into()));
+                }
+                page.scanned_to = cursor;
+                return Ok(page);
+            }
+            Ok(true) => {}
+            Err(_) if halt.load(Ordering::Relaxed) == HALT_TIME_LIMIT && cursor > offset => {
+                page.next = Some(cursor);
+                page.next_byte = start_byte;
+                page.scanned_to = cursor;
+                return Ok(page);
+            }
+            Err(e) => return Err(ScanError::InvalidRequest(e.to_string())),
+        }
+        if malformed.load(Ordering::Relaxed) {
+            return Err(ScanError::InvalidRequest("Unclosed quoted record".into()));
+        }
+        next_byte = if utf8 {
+            Some(origin + reader.position().byte() - if indexed { 2 } else { 0 })
+        } else {
+            None
+        };
+        if first {
+            first = false;
+            if header {
+                continue;
+            }
+        }
+        while page.columns.len() < record.len().min(64) {
+            page.columns
+                .push(format!("Column {}", page.columns.len() + 1));
+        }
+        let row = cursor;
+        cursor += 1;
+        if row >= offset
+            && (needle.is_empty()
+                || record
+                    .iter()
+                    .take(64)
+                    .any(|cell| cell.to_lowercase().contains(&needle)))
+        {
+            let cost: usize = record.iter().take(64).map(str::len).sum();
+            // Worst-case control escaping expands sixfold, still below the
+            // shell's 8 MiB display budget and 16 MiB framed transport cap.
+            if retained_bytes + cost > 1024 * 1024 {
+                page.next = Some(row);
+                page.next_byte = start_byte;
+                page.scanned_to = row;
+                return Ok(page);
+            }
+            retained_bytes += cost;
+            page.rows
+                .push(record.iter().take(64).map(str::to_owned).collect());
+            page.source_rows.push(row);
+        }
+        if page.rows.len() >= limit {
+            page.next = Some(cursor);
+            page.next_byte = next_byte;
+            page.scanned_to = cursor;
+            return Ok(page);
+        }
+    }
+}
+
 /// Scan a file read-only. The caller supplies a length hint so coverage can
 /// display a denominator.
 pub fn scan_file(path: &Path, request: &ScanRequest) -> Result<ScanReport, ScanError> {
@@ -163,6 +376,7 @@ pub fn scan_with_progress<R: Read>(
         cancel,
         started,
         deadline,
+        record_budget: None,
         field_budget: Some(
             u64::try_from(request.limits.max_field_chars)
                 .unwrap_or(u64::MAX)
@@ -365,6 +579,7 @@ struct ReaderBounds<'a> {
     started: Instant,
     deadline: Option<Duration>,
     field_budget: Option<u64>,
+    record_budget: Option<u64>,
 }
 
 struct QuoteGuard<'a, R: Read> {
@@ -378,6 +593,7 @@ struct QuoteGuard<'a, R: Read> {
     bounds: ReaderBounds<'a>,
     /// Bytes counted since the current field started.
     field_bytes: u64,
+    record_bytes: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -406,6 +622,7 @@ impl<'a, R: Read> QuoteGuard<'a, R> {
             malformed,
             bounds,
             field_bytes: 0,
+            record_bytes: 0,
         }
     }
 
@@ -479,6 +696,19 @@ impl<R: Read> Read for QuoteGuard<'_, R> {
         for &byte in &buffer[..read] {
             let state_before = self.state;
             self.feed(byte);
+            self.record_bytes = self.record_bytes.saturating_add(1);
+            if self
+                .bounds
+                .record_budget
+                .is_some_and(|cap| self.record_bytes > cap)
+            {
+                return Err(io::Error::other(
+                    "record exceeds the desktop 1 MiB memory budget",
+                ));
+            }
+            if is_line_break(byte) && self.state == QuoteState::FieldStart {
+                self.record_bytes = 0;
+            }
             match (state_before, self.state) {
                 // A fresh field starts with this byte.
                 (QuoteState::FieldStart, QuoteState::Unquoted | QuoteState::Quoted) => {

@@ -18,6 +18,7 @@ jobs:
       - run: python3 -m unittest discover -s tools -p 'test_design.py'
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
+      - run: cargo test --locked -p csv-preview --test session -- --ignored
 
   windows:
     runs-on: windows-latest
@@ -40,6 +41,7 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
+      - run: cargo test --locked -p csv-preview --test session -- --ignored
 
       - name: Native standalone control smoke
         shell: pwsh
@@ -53,6 +55,10 @@ jobs:
           Copy-Item assets/desktop-fonts target/debug/fonts -Recurse -Force
           & target/native-smoke.exe 'target\debug\csv-desktop.exe' 'crates\csv-core\tests\fixtures\golden.csv' CSV target '007'
           if ($LASTEXITCODE -ne 0) { throw "Native standalone smoke failed" }
+          $rows = @('id,note,payload') + (0..599 | ForEach-Object { $note = if ($_ -eq 450) { 'NEEDLE.*' } else { 'ordinary' }; ('{0:D6},{1},payload' -f $_, $note) })
+          [IO.File]::WriteAllLines((Join-Path $pwd 'target/pages.csv'), $rows, [Text.UTF8Encoding]::new($false))
+          & target/native-smoke.exe 'target\debug\csv-desktop.exe' 'target\pages.csv' CSV target '000000' '--browse'
+          if ($LASTEXITCODE -ne 0) { throw "Native paging/search smoke failed" }
 
   # cargo-deny-action is container-based and only runs on Linux (proven by
   # the mh-ticker first CI run, run 41384343756: "Container action is only
