@@ -5,6 +5,9 @@
 #define UNICODE
 #endif
 #define _UNICODE
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #include <commctrl.h>
 #include <stdio.h>
@@ -48,6 +51,14 @@ static int dialog_check(HWND h,DWORD pid,int command,int dismiss,int credit){
  PostMessageW(probe.dialog,WM_COMMAND,dismiss,0);for(int i=0;i<300&&IsWindow(probe.dialog);i++)Sleep(20);
  return !IsWindow(probe.dialog)&&(!credit||probe.credit)&&IsWindow(h);
 }
+static int set_test_bounds(HWND h,int wanted_w,int wanted_h,RECT *actual){
+ MONITORINFO info={0};info.cbSize=sizeof(info);if(!GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&info))return 0;
+ LONG width=info.rcWork.right-info.rcWork.left,height=info.rcWork.bottom-info.rcWork.top;
+ LONG w=width<wanted_w?width:wanted_w,hh=height<wanted_h?height:wanted_h;
+ LONG x=info.rcWork.left+(width-w)/2,y=info.rcWork.top+(height-hh)/2;
+ printf("work area=%ld,%ld,%ld,%ld; requested normal bounds=%ld,%ld,%ld,%ld\n",info.rcWork.left,info.rcWork.top,width,height,x,y,w,hh);
+ return MoveWindow(h,x,y,w,hh,TRUE)&&GetWindowRect(h,actual);
+}
 static int caption_matches_heading(HWND h,const wchar_t *kind){
  wchar_t title[4096]={0},heading[4096]={0};GetWindowTextW(h,title,4096);SendMessageW(GetDlgItem(h,107),WM_GETTEXT,4096,(LPARAM)heading);
  return heading[0]&&wcsstr(title,kind)&&!wcscmp(title,heading);
@@ -63,6 +74,7 @@ static int source_row(HWND h,DWORD pid,const wchar_t *wanted){
  wchar_t text[4096]={0};SendMessageW(GetDlgItem(h,110),WM_GETTEXT,4096,(LPARAM)text);return ok&&wcsstr(text,wanted)!=0;
 }
 int wmain(int argc,wchar_t **argv){
+ SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
  if(argc==5 && !wcscmp(argv[1],L"--size")){
   wchar_t klass[128],*end=0;swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
   long width=wcstol(argv[3],&end,10);if(*end||width<940||width>4096)return 2;
@@ -182,12 +194,13 @@ int wmain(int argc,wchar_t **argv){
  SendMessageW(reload,BM_CLICK,0,0);if(!IsWindowEnabled(cancel)||IsWindowEnabled(reload))return fail("busy native button states");SendMessageW(cancel,BM_CLICK,0,0);GetWindowTextW(status,text,4096);if(!wcsstr(text,L"Cancelled"))return fail("cancel feedback");
  SendMessageW(h,WM_COMMAND,102,0);for(int i=0;i<500;i++){GetWindowTextW(status,text,4096);if(wcsstr(text,L"page rows"))break;Sleep(20);}if(!wcsstr(text,L"page rows"))return fail("reload after cancel");puts("PASS: cancel/reload recovery");
  // Resize and select a theme, then verify another real process restores both.
- MoveWindow(h,80,60,1040,660,TRUE);RECT remembered;GetWindowRect(h,&remembered);
+ RECT remembered;if(!set_test_bounds(h,1040,660,&remembered))return fail("choose visible normal bounds");
  SendMessageW(combo,CB_SETCURSEL,3,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(104,CBN_SELCHANGE),(LPARAM)combo);
  if(!close_gui(h,&pi))return fail("clean close and atomic appearance save");
  swprintf(cmd,65536,L"\"%ls\"",argv[1]);h=launch_gui(cmd,klass,&pi);if(!h)return fail("relaunch without a source file");
  if(!caption_matches_heading(h,argv[3]))return fail("native caption identifies an empty viewer");
  RECT restored;GetWindowRect(h,&restored);
+ printf("restart expected=%ld,%ld,%ld,%ld actual=%ld,%ld,%ld,%ld theme=%lld dpi=%u\n",remembered.left,remembered.top,remembered.right,remembered.bottom,restored.left,restored.top,restored.right,restored.bottom,(long long)SendMessageW(GetDlgItem(h,104),CB_GETCURSEL,0,0),GetDpiForWindow(h));
  if(!EqualRect(&remembered,&restored)||SendMessageW(GetDlgItem(h,104),CB_GETCURSEL,0,0)!=3)return fail("size position and theme survive process restart");
  if((int)SendMessageW(GetDlgItem(h,109),LVM_GETITEMCOUNT,0,0)!=0||!IsWindowVisible(GetDlgItem(h,117))||IsWindowEnabled(GetDlgItem(h,112)))return fail("welcome state without restored file history");
  SendMessageW(GetDlgItem(h,117),WM_GETTEXT,4096,(LPARAM)text);if(!wcsstr(text,L"Open a ")||!wcsstr(text,L"read-only"))return fail("functional first-open guidance");
@@ -195,7 +208,8 @@ int wmain(int argc,wchar_t **argv){
  if(!dialog_check(h,pi.dwProcessId,105,IDOK,1))return fail("F1 opens real Help and about with Maria credit");
  puts("PASS: remembered normal size, screen position and theme; welcome, Open dialog cancel and F1 help");
  // Resize and maximize in one session: preserve the last normal bounds, not the maximized frame.
- MoveWindow(h,100,80,1060,680,TRUE);GetWindowRect(h,&remembered);ShowWindow(h,SW_MAXIMIZE);
+ if(!set_test_bounds(h,1060,680,&remembered)){return fail("choose visible restore bounds");}
+ ShowWindow(h,SW_MAXIMIZE);
  if(!IsZoomed(h)||!close_gui(h,&pi))return fail("save maximized state");
  swprintf(cmd,65536,L"\"%ls\"",argv[1]);h=launch_gui(cmd,klass,&pi);if(!h||!IsZoomed(h))return fail("maximized state survives restart");
  ShowWindow(h,SW_RESTORE);GetWindowRect(h,&restored);if(!EqualRect(&remembered,&restored))return fail("restore correct normal bounds after maximized restart");
