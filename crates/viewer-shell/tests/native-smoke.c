@@ -50,7 +50,9 @@ static int dialog_check(HWND h,DWORD pid,int command,int dismiss,int credit){
  if(!probe.dialog){fprintf(stderr,"dialog command=%d did not appear; enabled=%d popup=%p owner=%p\n",command,IsWindowEnabled(h),GetLastActivePopup(h),h);return 0;}
  if(credit)EnumChildWindows(probe.dialog,find_credit,(LPARAM)&probe);
  wchar_t caption[256]={0};GetWindowTextW(probe.dialog,caption,256);
- PostMessageW(probe.dialog,WM_COMMAND,dismiss,0);
+ HWND action=GetDlgItem(probe.dialog,dismiss);
+ if(!action){fwprintf(stderr,L"dialog command=%d caption=%ls missing action=%d\n",command,caption,dismiss);return 0;}
+ SendMessageW(action,BM_CLICK,0,0);
  int stable=0;for(int i=0;i<300&&stable<2;i++){
   if(!IsWindow(probe.dialog)&&IsWindowEnabled(h)&&GetLastActivePopup(h)==h)stable++;else stable=0;Sleep(20);
  }
