@@ -7,3 +7,6 @@
 # Agent workspace files (kept local-only; see docs/fix-plan/XR-1.md)
 AGENTS.md
 opencode.json
+
+# Python design-tool caches
+__pycache__/

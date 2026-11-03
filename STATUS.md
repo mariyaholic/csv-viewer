@@ -1,5 +1,22 @@
 # Status
 
+## Extensible six-theme design system — 2026-11-02
+
+Added `design/system/` contract v0.1.0: reference → semantic → component aliases,
+shared typography/spacing/density/interaction rules, component anatomy and recipes
+for find/filter/sort, paging, schema, profiling, export, comparison and settings.
+Matching snapshots live in both viewer repos and the portfolio design directory.
+No Rust runtime, worker protocol, parser, dependency lock or native behavior changed.
+
+Verification: `python3 tools/validate_design.py --peer <sibling tokens.json>` passes
+six themes / 150 foreground-background contrast pairs, aliases, required states,
+typefaces, spacing, reduced-motion and current Rust palette parity. All 16
+adversarial unittest cases pass. `render_design.py` produces all six future-control
+plates; those are illustrative, not runtime/native acceptance screenshots.
+No Rust LOC changed. Native forced colors, text scaling, UIA and DPI acceptance
+remain required for future implementation; token checks are not accessibility proof.
+
+
 ## Standalone desktop — implemented first slice (2026-11-02)
 
 This supersedes the architecture-only note below; it is not native release acceptance.
