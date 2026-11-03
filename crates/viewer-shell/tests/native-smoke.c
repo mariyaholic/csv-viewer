@@ -31,7 +31,7 @@ static int source_row(HWND h,DWORD pid,const wchar_t *wanted){
 int wmain(int argc,wchar_t **argv){
  if(argc==4 && !wcscmp(argv[1],L"--find")){
   wchar_t klass[128];swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
-  if(!set_query(h,argv[3]))return fail("search edit content roundtrip");SendMessageW(GetDlgItem(h,112),BM_CLICK,0,0);return 0;
+  if(!set_query(h,argv[3])){return fail("search edit content roundtrip");}SendMessageW(GetDlgItem(h,112),BM_CLICK,0,0);return 0;
  }
  if(argc==3 && (!wcscmp(argv[1],L"--probe")||!wcscmp(argv[1],L"--close")||!wcscmp(argv[1],L"--press")||!wcscmp(argv[1],L"--release")||!wcscmp(argv[1],L"--hover")||!wcscmp(argv[1],L"--away")||!wcscmp(argv[1],L"--next")||!wcscmp(argv[1],L"--previous"))){
   wchar_t klass[128];swprintf(klass,128,L"MariaStandalone%lsViewer",argv[2]);HWND h=FindWindowW(klass,0);if(!h)return 3;
@@ -118,11 +118,11 @@ int wmain(int argc,wchar_t **argv){
   if(!IsWindowEnabled(next)||IsWindowEnabled(previous))return fail("initial page availability");
   SendMessageW(next,BM_CLICK,0,0);if(!ready(h)||!source_row(h,pi.dwProcessId,L"source row 201)"))return fail("real next page source rows");
   SendMessageW(previous,BM_CLICK,0,0);if(!ready(h)||!source_row(h,pi.dwProcessId,L"source row 1)"))return fail("real previous page");
-  if(!set_query(h,L"needle.*"))return fail("search edit content roundtrip");SendMessageW(find,BM_CLICK,0,0);
+  if(!set_query(h,L"needle.*")){return fail("search edit content roundtrip");}SendMessageW(find,BM_CLICK,0,0);
   if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=1||!source_row(h,pi.dwProcessId,L"source row 451)"))return fail("global literal search beyond first page");
-  if(!set_query(h,L"definitely absent literal.*"))return fail("search edit content roundtrip");SendMessageW(find,BM_CLICK,0,0);
+  if(!set_query(h,L"definitely absent literal.*")){return fail("search edit content roundtrip");}SendMessageW(find,BM_CLICK,0,0);
   if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=0||IsWindowEnabled(next))return fail("search exhaustion, not false matches");
-  if(!set_query(h,L""))return fail("search edit content roundtrip");SendMessageW(find,BM_CLICK,0,0);if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=200)return fail("clear search returns first page");
+  if(!set_query(h,L"")){return fail("search edit content roundtrip");}SendMessageW(find,BM_CLICK,0,0);if(!ready(h)||(int)SendMessageW(table,LVM_GETITEMCOUNT,0,0)!=200)return fail("clear search returns first page");
   puts("PASS: native next/previous, source row numbers, global literal search beyond row 200 and clear/no-match behavior");
  }
  // Reload and Cancel are recoverable; a further reload must repopulate.
