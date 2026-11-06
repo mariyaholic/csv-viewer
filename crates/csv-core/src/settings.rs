@@ -13,7 +13,7 @@ use crate::market::MarketRequest;
 use crate::model::{EncodingChoice, HeaderChoice, ScanRequest};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Settings {
     /// `None` means auto-detect.
     pub delimiter: Option<char>,
@@ -83,6 +83,46 @@ impl Settings {
         }
     }
 
+    /// Preview paths must not silently certify data using fallback settings.
+    /// Only a genuinely missing file selects defaults; every other problem
+    /// is surfaced to the caller before parsing the source.
+    pub fn load_checked(path: Option<&Path>) -> Result<Self, String> {
+        use std::io::Read;
+        let path = path
+            .map(Path::to_path_buf)
+            .or_else(default_path)
+            .ok_or_else(|| "no per-user settings directory could be determined".to_string())?;
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default())
+            }
+            Err(error) => {
+                return Err(format!(
+                    "settings at {} could not be read: {error}",
+                    path.display()
+                ))
+            }
+        };
+        let mut bytes = Vec::new();
+        file.take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                format!("settings at {} could not be read: {error}", path.display())
+            })?;
+        if bytes.len() > 1024 * 1024 {
+            return Err("settings exceed 1 MiB".into());
+        }
+        let settings: Self = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "settings at {} could not be parsed: {error}",
+                path.display()
+            )
+        })?;
+        settings.validate()?;
+        Ok(settings)
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), String> {
         self.validate()?;
         let parent = path
@@ -106,6 +146,9 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.quote.is_some() && self.delimiter.is_none() {
+            return Err("a quote override requires an explicit delimiter".into());
+        }
         if self.preview_rows == 0 || self.preview_rows > 10_000 {
             return Err("preview_rows must be between 1 and 10000".to_string());
         }
@@ -208,6 +251,43 @@ pub fn default_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_load_rejects_misspelled_keys_and_ignored_quote_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for bytes in [
+            br#"{"delimter":";"}"#.as_slice(),
+            br#"{"encodng":"utf-8"}"#.as_slice(),
+            br#"{"quote":"'"}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(Settings::load_checked(Some(&path)).is_err());
+            let (_, warnings) = Settings::load(Some(&path));
+            assert!(!warnings.is_empty(), "legacy load must surface fallback");
+        }
+        std::fs::write(&path, br#"{"delimiter":";","quote":"'"}"#).unwrap();
+        assert!(Settings::load_checked(Some(&path)).is_ok());
+    }
+
+    #[test]
+    fn checked_load_rejects_errors_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert_eq!(
+            Settings::load_checked(Some(&path)).unwrap(),
+            Settings::default()
+        );
+        for bytes in [
+            b"broken".as_slice(),
+            br#"{"encoding":"not-an-encoding"}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(Settings::load_checked(Some(&path)).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        assert!(Settings::load_checked(Some(dir.path())).is_err());
+    }
 
     #[test]
     fn default_settings_are_valid() {
