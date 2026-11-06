@@ -13,7 +13,7 @@ use crate::market::MarketRequest;
 use crate::model::{EncodingChoice, HeaderChoice, ScanRequest};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Settings {
     /// `None` means auto-detect.
     pub delimiter: Option<char>,
@@ -146,6 +146,9 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.quote.is_some() && self.delimiter.is_none() {
+            return Err("a quote override requires an explicit delimiter".into());
+        }
         if self.preview_rows == 0 || self.preview_rows > 10_000 {
             return Err("preview_rows must be between 1 and 10000".to_string());
         }
@@ -248,6 +251,24 @@ pub fn default_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_load_rejects_misspelled_keys_and_ignored_quote_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for bytes in [
+            br#"{"delimter":";"}"#.as_slice(),
+            br#"{"encodng":"utf-8"}"#.as_slice(),
+            br#"{"quote":"'"}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(Settings::load_checked(Some(&path)).is_err());
+            let (_, warnings) = Settings::load(Some(&path));
+            assert!(!warnings.is_empty(), "legacy load must surface fallback");
+        }
+        std::fs::write(&path, br#"{"delimiter":";","quote":"'"}"#).unwrap();
+        assert!(Settings::load_checked(Some(&path)).is_ok());
+    }
 
     #[test]
     fn checked_load_rejects_errors_without_overwriting() {
