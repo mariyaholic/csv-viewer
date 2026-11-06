@@ -17,3 +17,24 @@ Formatting, offline documentation generation, six documentation tests, 18 design
 ## Protocol limits
 
 Clients must use distinct IDs for outstanding requests and must not send stale cancellations after reusing an ID: cancellation messages cannot distinguish two simultaneous requests with the same ID. Sequential reuse after completion is supported, and cancels received before the replacement request are ignored; it does not redesign request identity or prove all scheduling interleavings. No merge, release or deployment is performed.
+
+
+## Review follow-up: completion and settings
+
+The worker ends its active generation before serializing the terminal Result
+or Error. A synchronized terminal writer queues and cancels a replacement ID
+to prove cancellation cannot be consumed by the old scan during delivery.
+Accepted/progress/terminal/error write failures are fatal; partially written
+frames are never treated as valid reported request errors.
+
+Windows preview and full-scan entry points use checked settings loading and
+show an error before starting work if reading, parsing or validation fails.
+Only a missing settings file selects defaults. A Windows-path regression
+checks both entry points' common request builder and preservation of bad bytes.
+
+
+The reader has an eight-message pending queue and uses nonblocking enqueue.
+Overflow cancels active work and terminates with a clear protocol error rather
+than blocking the reader or allocating an unbounded queue. Pending cancellation
+state is bounded by received queued scans, plus at most the rejected enqueue.
+The existing per-frame cap still applies; this is not an exact process RSS cap.
