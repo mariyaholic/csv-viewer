@@ -522,6 +522,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+    // Cancellation is deliberately nonblocking. Do not release the shared
+    // process-test lock until the background owner has reaped the child and
+    // returned its operation slot, or the next test can observe it in flight.
+    fn wait_for_cleanup(task: &Task) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while ACTIVE.load(Ordering::SeqCst) != 0 || task.child.lock().unwrap().is_some() {
+            assert!(Instant::now() < until, "cancelled task did not clean up");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     fn blocked(
         _file: &mut File,
         _path: &Path,
@@ -588,6 +598,7 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
+        wait_for_cleanup(&task);
     }
     #[test]
     fn cancellation_breaks_blocked_worker_io() {
@@ -605,7 +616,8 @@ mod tests {
         );
         wait_for_child(&task);
         task.cancel();
-        assert!(task.wait().is_err());
+        assert!(task.poll().unwrap().is_err());
+        wait_for_cleanup(&task);
     }
 
     #[test]

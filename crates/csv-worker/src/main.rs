@@ -8,7 +8,7 @@
 //! never writes to the source, never touches the network, and never places
 //! orders or calls trading APIs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +21,7 @@ use csv_protocol::{
 };
 use csvview_core::{scan_file_with_info, InputInfo, ScanError, ScanRequest};
 
+const MAX_PENDING_REQUESTS: usize = 8;
 const DEFAULT_MAX_FRAME: usize = csv_protocol::frame::MAX_FRAME_BYTES;
 const DEFAULT_MAX_SPOOL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const DEFAULT_MAX_RECORDS: u64 = 100_000_000;
@@ -113,32 +114,90 @@ fn parse_number(
 }
 
 #[derive(Default)]
+struct ControlState {
+    current: Option<u64>,
+    // One entry per request actually received, not arbitrary Cancel messages.
+    pending: BTreeMap<u64, VecDeque<bool>>,
+    fatal: Option<String>,
+}
+
+#[derive(Default)]
 struct Control {
-    current: Mutex<Option<u64>>,
-    cancelled: Mutex<BTreeSet<u64>>,
+    state: Mutex<ControlState>,
     flag: AtomicBool,
 }
 
 impl Control {
+    fn abort(&self, message: &str) {
+        self.state.lock().unwrap().fatal = Some(message.to_string());
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.state.lock().unwrap().fatal.clone()
+    }
+
+    fn queue(&self, id: u64) {
+        self.state
+            .lock()
+            .unwrap()
+            .pending
+            .entry(id)
+            .or_default()
+            .push_back(false);
+    }
+
     fn begin(&self, id: u64) {
-        self.flag.store(false, Ordering::SeqCst);
-        let mut cancelled = self.cancelled.lock().unwrap();
-        if cancelled.remove(&id) {
-            self.flag.store(true, Ordering::SeqCst);
+        let mut state = self.state.lock().unwrap();
+        let queue = state
+            .pending
+            .get_mut(&id)
+            .expect("scan registered before dispatch");
+        let cancelled = queue.pop_front().expect("queued scan");
+        if queue.is_empty() {
+            state.pending.remove(&id);
         }
-        *self.current.lock().unwrap() = Some(id);
+        state.current = Some(id);
+        self.flag
+            .store(cancelled || state.fatal.is_some(), Ordering::SeqCst);
     }
 
     fn cancel(&self, id: u64) {
-        self.cancelled.lock().unwrap().insert(id);
-        if *self.current.lock().unwrap() == Some(id) {
+        let mut state = self.state.lock().unwrap();
+        if state.current == Some(id) {
             self.flag.store(true, Ordering::SeqCst);
+        } else if let Some(cancelled) = state.pending.get_mut(&id).and_then(|q| q.front_mut()) {
+            *cancelled = true;
         }
+        // Unknown/completed IDs are ignored, so a late cancellation cannot
+        // persist until an unrelated future reuse of that ID.
     }
 
-    fn end(&self) {
-        *self.current.lock().unwrap() = None;
+    fn end(&self) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        state.current = None;
         self.flag.store(false, Ordering::SeqCst);
+        state.fatal.clone()
+    }
+}
+
+// Never block the input reader on a full work queue: it must remain able to
+// cancel the active scan. Overflow cancels it and terminates the connection.
+fn queue_message(
+    sender: &std::sync::mpsc::SyncSender<Result<ClientMessage, FrameError>>,
+    control: &Control,
+    message: Result<ClientMessage, FrameError>,
+) -> bool {
+    if let Ok(ClientMessage::Scan { id, .. }) = &message {
+        control.queue(*id);
+    }
+    match sender.try_send(message) {
+        Ok(()) => true,
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            control.abort("too many pending worker requests (maximum 8); connection closed");
+            false
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
     }
 }
 
@@ -183,7 +242,7 @@ fn run(config: Config) -> Result<(), String> {
                     "protocol version {protocol_version} is not supported (expected {PROTOCOL_VERSION})"
                 ),
                 config.max_frame_bytes,
-            );
+            )?;
             return Ok(());
         }
         _ => {
@@ -193,7 +252,7 @@ fn run(config: Config) -> Result<(), String> {
                 ErrorCode::BadRequest,
                 "expected a hello message".to_string(),
                 config.max_frame_bytes,
-            );
+            )?;
             return Ok(());
         }
     }
@@ -209,26 +268,37 @@ fn run(config: Config) -> Result<(), String> {
     .map_err(|error| format!("cannot send ready: {error}"))?;
 
     let control = Arc::new(Control::default());
-    let (sender, receiver) = std::sync::mpsc::channel::<Result<ClientMessage, FrameError>>();
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<Result<ClientMessage, FrameError>>(MAX_PENDING_REQUESTS);
     let reader_config = config.clone();
     let reader_control = control.clone();
     let _reader = thread::spawn(move || loop {
         match read_message::<_, ClientMessage>(&mut input, reader_config.max_frame_bytes) {
             Ok(ClientMessage::Cancel { id }) => reader_control.cancel(id),
             Ok(message) => {
-                if sender.send(Ok(message)).is_err() {
+                if !queue_message(&sender, &reader_control, Ok(message)) {
                     break;
                 }
             }
             Err(FrameError::Closed) => break,
             Err(error) => {
-                let _ = sender.send(Err(error));
+                queue_message(&sender, &reader_control, Err(error));
                 break;
             }
         }
     });
 
     for message in receiver {
+        if let Some(error) = control.failure() {
+            send_error(
+                &mut output,
+                None,
+                ErrorCode::BadRequest,
+                error.clone(),
+                config.max_frame_bytes,
+            )?;
+            return Err(error);
+        }
         match message {
             Ok(ClientMessage::Scan {
                 id,
@@ -245,17 +315,11 @@ fn run(config: Config) -> Result<(), String> {
                     &control.flag,
                     &mut output,
                 );
-                control.end();
-                match result {
-                    Ok(()) => {}
-                    Err(WorkerError::Reported) => {}
-                    Err(WorkerError::Message(code, message)) => {
-                        send_error(&mut output, Some(id), code, message, config.max_frame_bytes);
-                    }
-                }
+                finish_scan(&control, id, result, &mut output, config.max_frame_bytes)?;
             }
             Ok(ClientMessage::Shutdown) => {
-                let _ = write_message(&mut output, &WorkerMessage::Goodbye, config.max_frame_bytes);
+                write_message(&mut output, &WorkerMessage::Goodbye, config.max_frame_bytes)
+                    .map_err(|error| format!("cannot send goodbye: {error}"))?;
                 break;
             }
             Ok(ClientMessage::Hello { .. }) => {
@@ -265,7 +329,7 @@ fn run(config: Config) -> Result<(), String> {
                     ErrorCode::BadRequest,
                     "already greeted".to_string(),
                     config.max_frame_bytes,
-                );
+                )?;
             }
             Ok(ClientMessage::Cancel { id }) => control.cancel(id),
             Err(error) => {
@@ -275,17 +339,69 @@ fn run(config: Config) -> Result<(), String> {
                     ErrorCode::Io,
                     error.to_string(),
                     config.max_frame_bytes,
-                );
+                )?;
                 break;
             }
         }
     }
-    Ok(())
+    finish_connection(&control, &mut output, config.max_frame_bytes)
 }
 
 enum WorkerError {
-    Reported,
+    Output(FrameError),
     Message(ErrorCode, String),
+}
+
+fn finish_scan(
+    control: &Control,
+    id: u64,
+    result: Result<WorkerMessage, WorkerError>,
+    output: &mut impl Write,
+    max_frame_bytes: usize,
+) -> Result<(), String> {
+    // Publish completion internally BEFORE the peer can observe its terminal
+    // reply and reuse the ID. A cancel for a newly queued reuse then cannot
+    // be consumed by the completed scan.
+    if let Some(error) = control.end() {
+        send_error(
+            output,
+            None,
+            ErrorCode::BadRequest,
+            error.clone(),
+            max_frame_bytes,
+        )?;
+        return Err(error);
+    }
+    let response = match result {
+        Ok(response) => response,
+        Err(WorkerError::Message(code, message)) => WorkerMessage::Error {
+            id: Some(id),
+            code,
+            message,
+        },
+        Err(WorkerError::Output(error)) => return Err(format!("scan output failed: {error}")),
+    };
+    write_message(output, &response, max_frame_bytes)
+        .map(|_| ())
+        .map_err(|error| format!("cannot send scan result: {error}"))
+}
+
+fn finish_connection(
+    control: &Control,
+    output: &mut impl Write,
+    max_frame_bytes: usize,
+) -> Result<(), String> {
+    if let Some(error) = control.failure() {
+        send_error(
+            output,
+            None,
+            ErrorCode::BadRequest,
+            error.clone(),
+            max_frame_bytes,
+        )?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -297,93 +413,48 @@ fn perform_scan(
     config: &Config,
     cancel: &AtomicBool,
     output: &mut impl Write,
-) -> Result<(), WorkerError> {
-    let path = match validate_source(source, spool_dir, config) {
-        Ok(path) => path,
-        Err(WorkerError::Message(code, message)) => {
-            send_error(output, Some(id), code, message, config.max_frame_bytes);
-            return Err(WorkerError::Reported);
-        }
-        Err(error) => return Err(error),
-    };
-
-    if write_message(
+) -> Result<WorkerMessage, WorkerError> {
+    let path = validate_source(source, spool_dir, config)?;
+    write_message(
         output,
         &WorkerMessage::Accepted { id },
         config.max_frame_bytes,
     )
-    .is_err()
-    {
-        cancel.store(true, Ordering::SeqCst);
-        return Err(WorkerError::Reported);
-    }
+    .map_err(WorkerError::Output)?;
 
     let mut request = request.clone();
     cap_request(&mut request, config);
-    if let Err(error) = request.validate() {
-        send_error(
-            output,
-            Some(id),
-            ErrorCode::BadRequest,
-            error.to_string(),
-            config.max_frame_bytes,
-        );
-        return Err(WorkerError::Reported);
-    }
+    request
+        .validate()
+        .map_err(|error| WorkerError::Message(ErrorCode::BadRequest, error.to_string()))?;
 
-    let mut progress_error = false;
+    let mut progress_error = None;
     let info = InputInfo {
         total_bytes: Some(source.bytes),
         truncated: source.truncated,
         preview_only: false,
     };
     let result = scan_file_with_info(&path, info, &request, cancel, &mut |progress| {
-        if !progress_error
-            && write_message(
+        if progress_error.is_none() {
+            if let Err(error) = write_message(
                 output,
                 &WorkerMessage::Progress { id, progress },
                 config.max_frame_bytes,
-            )
-            .is_err()
-        {
-            progress_error = true;
-            cancel.store(true, Ordering::SeqCst);
+            ) {
+                progress_error = Some(error);
+                cancel.store(true, Ordering::SeqCst);
+            }
         }
     });
-
+    if let Some(error) = progress_error {
+        return Err(WorkerError::Output(error));
+    }
     match result {
-        Ok(report) => {
-            if write_message(
-                output,
-                &WorkerMessage::Result { id, report },
-                config.max_frame_bytes,
-            )
-            .is_err()
-            {
-                return Err(WorkerError::Reported);
-            }
-            Ok(())
-        }
+        Ok(report) => Ok(WorkerMessage::Result { id, report }),
         Err(ScanError::InvalidRequest(message)) => {
-            send_error(
-                output,
-                Some(id),
-                ErrorCode::BadRequest,
-                message,
-                config.max_frame_bytes,
-            );
-            Err(WorkerError::Reported)
+            Err(WorkerError::Message(ErrorCode::BadRequest, message))
         }
-        Err(ScanError::Io(message)) => {
-            send_error(
-                output,
-                Some(id),
-                ErrorCode::Io,
-                message,
-                config.max_frame_bytes,
-            );
-            Err(WorkerError::Reported)
-        }
+        Err(ScanError::Io(message)) => Err(WorkerError::Message(ErrorCode::Io, message)),
     }
 }
 
@@ -471,12 +542,14 @@ fn send_error(
     code: ErrorCode,
     message: String,
     max_frame_bytes: usize,
-) {
-    let _ = write_message(
+) -> Result<(), String> {
+    write_message(
         output,
         &WorkerMessage::Error { id, code, message },
         max_frame_bytes,
-    );
+    )
+    .map(|_| ())
+    .map_err(|error| format!("cannot send error response: {error}"))
 }
 
 #[cfg(test)]
@@ -582,19 +655,26 @@ mod tests {
     #[test]
     fn control_cancels_only_the_matching_scan() {
         let control = Control::default();
+        control.queue(1);
         control.begin(1);
+        control.queue(2);
         control.cancel(2);
         assert!(!control.flag.load(Ordering::SeqCst));
         control.cancel(1);
         assert!(control.flag.load(Ordering::SeqCst));
-        control.end();
+        let _ = control.end();
+        control.queue(1);
         control.begin(1);
+        assert!(!control.flag.load(Ordering::SeqCst));
+        let _ = control.end();
+        control.begin(2);
         assert!(
             control.flag.load(Ordering::SeqCst),
             "pending cancel is kept"
         );
-        control.end();
-        control.begin(1);
+        let _ = control.end();
+        control.queue(2);
+        control.begin(2);
         assert!(!control.flag.load(Ordering::SeqCst));
     }
 }
@@ -602,6 +682,258 @@ mod tests {
 #[cfg(test)]
 mod control_tests {
     use super::*;
+
+    #[test]
+    fn overflow_after_last_dequeue_is_reported_before_result_and_at_eof() {
+        let control = Arc::new(Control::default());
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        control.queue(7);
+        sender.send(()).unwrap();
+        // Simulate try_send observing Full, then being descheduled before it
+        // records overflow while the consumer dequeues the last item.
+        assert!(matches!(
+            sender.try_send(()),
+            Err(std::sync::mpsc::TrySendError::Full(_))
+        ));
+        receiver.recv().unwrap();
+        control.begin(7);
+        assert!(control.failure().is_none());
+        let other = control.clone();
+        let worker = thread::spawn(move || {
+            other.abort("injected pending queue overflow");
+            drop(sender);
+        });
+        worker.join().unwrap();
+        assert!(receiver.recv().is_err());
+        let mut bytes = Vec::new();
+        assert!(finish_scan(
+            &control,
+            7,
+            Err(WorkerError::Message(
+                ErrorCode::Io,
+                "incomplete scan".into()
+            )),
+            &mut bytes,
+            DEFAULT_MAX_FRAME
+        )
+        .is_err());
+        let reply: WorkerMessage =
+            read_message(&mut io::Cursor::new(bytes), DEFAULT_MAX_FRAME).unwrap();
+        assert!(
+            matches!(reply, WorkerMessage::Error { id: None, code: ErrorCode::BadRequest, message } if message.contains("queue overflow"))
+        );
+        // Overflow that arrives after a previous terminal reply is still
+        // checked when the receiver has closed without another queued item.
+        assert!(finish_connection(&control, &mut Vec::new(), DEFAULT_MAX_FRAME).is_err());
+    }
+
+    #[test]
+    fn request_flood_is_bounded_and_cancels_active_work() {
+        let control = Control::default();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(MAX_PENDING_REQUESTS);
+        control.queue(0);
+        control.begin(0);
+        for id in 1..=MAX_PENDING_REQUESTS as u64 {
+            let message = ClientMessage::Scan {
+                id,
+                source: SourceSpec {
+                    path: "synthetic".into(),
+                    bytes: 0,
+                    truncated: false,
+                },
+                request: ScanRequest::full(),
+            };
+            assert!(queue_message(&sender, &control, Ok(message)));
+        }
+        assert!(!queue_message(
+            &sender,
+            &control,
+            Ok(ClientMessage::Shutdown)
+        ));
+        assert!(control.flag.load(Ordering::SeqCst));
+        assert!(control.failure().unwrap().contains("too many pending"));
+        assert_eq!(receiver.try_iter().count(), MAX_PENDING_REQUESTS);
+        assert_eq!(
+            control.state.lock().unwrap().pending.len(),
+            MAX_PENDING_REQUESTS
+        );
+    }
+
+    #[test]
+    fn partial_terminal_and_error_writes_are_fatal() {
+        struct Broken {
+            left: usize,
+        }
+        impl Write for Broken {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.left == 0 {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "injected"));
+                }
+                let n = bytes.len().min(self.left);
+                self.left -= n;
+                Ok(n)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        for left in [0, 2, 6] {
+            let control = Control::default();
+            control.queue(7);
+            control.begin(7);
+            assert!(finish_scan(
+                &control,
+                7,
+                Err(WorkerError::Message(
+                    ErrorCode::BadRequest,
+                    "bad scan".into()
+                )),
+                &mut Broken { left },
+                DEFAULT_MAX_FRAME
+            )
+            .is_err());
+            assert!(control.state.lock().unwrap().current.is_none());
+            assert!(send_error(
+                &mut Broken { left },
+                None,
+                ErrorCode::BadRequest,
+                "bad input".into(),
+                DEFAULT_MAX_FRAME
+            )
+            .is_err());
+        }
+    }
+    #[test]
+    fn result_delivery_reuse_and_cancel_targets_the_new_request() {
+        // The writer acts as a synchronized peer: once the terminal Result
+        // begins delivery, immediately queue and cancel a replacement.
+        struct Peer<'a> {
+            control: &'a Control,
+            bytes: Vec<u8>,
+            queued: bool,
+        }
+        impl Write for Peer<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if !self.queued {
+                    self.control.queue(7);
+                    self.control.cancel(7);
+                    self.queued = true;
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("result.csv");
+        std::fs::write(&path, b"a,b\n1,2\n").unwrap();
+        let config = Config::parse(
+            [
+                "--spool-dir".to_string(),
+                root.to_string_lossy().into_owned(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        let source = SourceSpec {
+            path: path.to_string_lossy().into_owned(),
+            bytes: 8,
+            truncated: false,
+        };
+        let control = Control::default();
+        control.queue(7);
+        control.begin(7);
+        let result = perform_scan(
+            7,
+            &source,
+            &ScanRequest::full(),
+            &root,
+            &config,
+            &control.flag,
+            &mut Vec::new(),
+        );
+        assert!(matches!(&result, Ok(WorkerMessage::Result { .. })));
+        let mut peer = Peer {
+            control: &control,
+            bytes: Vec::new(),
+            queued: false,
+        };
+        finish_scan(&control, 7, result, &mut peer, DEFAULT_MAX_FRAME).unwrap();
+        let reply: WorkerMessage =
+            read_message(&mut io::Cursor::new(peer.bytes), DEFAULT_MAX_FRAME).unwrap();
+        assert!(matches!(reply, WorkerMessage::Result { id: 7, .. }));
+        control.begin(7);
+        assert!(
+            control.flag.load(Ordering::SeqCst),
+            "new queued request lost its cancellation"
+        );
+    }
+    #[test]
+    fn late_or_unknown_cancel_is_not_saved_for_future_reuse() {
+        let control = Control::default();
+        control.queue(7);
+        control.begin(7);
+        let _ = control.end();
+        control.cancel(7);
+        for id in 100..10_000 {
+            control.cancel(id);
+        }
+        assert!(control.state.lock().unwrap().pending.is_empty());
+        control.queue(7);
+        control.begin(7);
+        assert!(!control.flag.load(Ordering::SeqCst));
+        let _ = control.end();
+    }
+
+    #[test]
+    fn queued_cancel_is_consumed_only_by_the_received_request() {
+        let control = Control::default();
+        control.queue(1);
+        control.begin(1);
+        control.queue(2);
+        control.cancel(2);
+        assert!(!control.flag.load(Ordering::SeqCst));
+        let _ = control.end();
+        control.begin(2);
+        assert!(control.flag.load(Ordering::SeqCst));
+        let _ = control.end();
+        control.cancel(2);
+        control.queue(2);
+        control.begin(2);
+        assert!(!control.flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn next_request_may_arrive_while_previous_result_is_being_delivered() {
+        let control = Control::default();
+        control.queue(7);
+        control.begin(7);
+        control.cancel(7);
+        control.queue(7);
+        let _ = control.end();
+        control.begin(7);
+        assert!(!control.flag.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn active_cancel_does_not_cancel_a_later_reused_id() {
+        let control = Control::default();
+        control.queue(7);
+        control.begin(7);
+        control.cancel(7);
+        assert!(control.flag.load(Ordering::SeqCst));
+        let _ = control.end();
+        control.queue(7);
+        control.begin(7);
+        assert!(
+            !control.flag.load(Ordering::SeqCst),
+            "active cancellation was retained for a new scan"
+        );
+        let _ = control.end();
+    }
+
     #[test]
     fn cancelling_an_old_request_cannot_poison_the_next_request() {
         let control = Arc::new(Control::default());
@@ -617,13 +949,15 @@ mod control_tests {
         });
         let mut bad = false;
         for _ in 0..20000 {
+            control.queue(1);
             control.begin(1);
             gate.wait();
-            control.end();
+            let _ = control.end();
+            control.queue(2);
             control.begin(2);
             gate.wait();
             bad |= control.flag.load(Ordering::Relaxed);
-            control.end();
+            let _ = control.end();
         }
         t.join().unwrap();
         assert!(!bad, "late cancel for request 1 must not cancel request 2");
