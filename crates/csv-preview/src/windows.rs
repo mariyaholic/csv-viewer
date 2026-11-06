@@ -1111,9 +1111,14 @@ unsafe extern "system" fn preview_do_preview(this: *mut c_void) -> HRESULT {
         object.window = window;
         SetWindowLongPtrW(window, GWLP_USERDATA, object as *mut PreviewObject as isize);
 
-        let mut request = ScanRequest::preview();
-        let (settings, _) = Settings::load(None);
-        settings.apply_to(&mut request);
+        let request = match configured_request(ScanRequest::preview(), None) {
+            Ok(request) => request,
+            Err(error) => {
+                object.set_error_text(&format!("Settings could not be loaded: {error}"));
+                UpdateWindow(object.window);
+                return S_OK;
+            }
+        };
         let reader = StreamReader::new(object.stream);
         let length_hint = stream_size_hint(object.stream);
         let config = PreviewConfig::default();
@@ -1220,6 +1225,15 @@ impl PreviewObject {
     }
 }
 
+fn configured_request(
+    mut request: ScanRequest,
+    path: Option<&std::path::Path>,
+) -> Result<ScanRequest, String> {
+    let settings = Settings::load_checked(path)?;
+    settings.apply_to(&mut request);
+    Ok(request)
+}
+
 unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
     let Some(session) = object.session.clone() else {
         object.set_error_text("The preview stream is no longer available.");
@@ -1234,9 +1248,13 @@ unsafe fn start_full_scan(object: &mut PreviewObject, window: HWND) {
         );
         return;
     };
-    let mut request = ScanRequest::full();
-    let (settings, _) = Settings::load(None);
-    settings.apply_to(&mut request);
+    let request = match configured_request(ScanRequest::full(), None) {
+        Ok(request) => request,
+        Err(error) => {
+            object.set_error_text(&format!("Settings could not be loaded: {error}"));
+            return;
+        }
+    };
     let timeout = Duration::from_millis(request.limits.deadline_ms.unwrap_or(120_000));
     if let Err(error) =
         session.start_full_scan(Arc::new(WorkerBackend::new(worker)), request, timeout)
@@ -2172,6 +2190,18 @@ mod tests {
     /// reachable), WM_KEYDOWN must compare VK codes (0x46 = VK_F triggers,
     /// and the old lowercase-literal branch, 0x66, spuriously matched
     /// VK_NUMPAD6). Drives the real window proc through real messages.
+    #[test]
+    fn preview_and_full_scan_refuse_invalid_user_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, b"invalid JSON").unwrap();
+        assert!(configured_request(ScanRequest::preview(), Some(&path)).is_err());
+        assert!(configured_request(ScanRequest::full(), Some(&path)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid JSON");
+        std::fs::write(&path, b"{}").unwrap();
+        assert!(configured_request(ScanRequest::preview(), Some(&path)).is_ok());
+    }
+
     #[test]
     fn click_focuses_the_pane_and_vks_compare_correctly() {
         unsafe {
