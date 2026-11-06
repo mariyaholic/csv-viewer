@@ -8,7 +8,7 @@
 //! never writes to the source, never touches the network, and never places
 //! orders or calls trading APIs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -113,36 +113,57 @@ fn parse_number(
 }
 
 #[derive(Default)]
+struct ControlState {
+    current: Option<u64>,
+    // One entry per request actually received, not arbitrary Cancel messages.
+    pending: BTreeMap<u64, VecDeque<bool>>,
+}
+
+#[derive(Default)]
 struct Control {
-    current: Mutex<Option<u64>>,
-    cancelled: Mutex<BTreeSet<u64>>,
+    state: Mutex<ControlState>,
     flag: AtomicBool,
 }
 
 impl Control {
+    fn queue(&self, id: u64) {
+        self.state
+            .lock()
+            .unwrap()
+            .pending
+            .entry(id)
+            .or_default()
+            .push_back(false);
+    }
+
     fn begin(&self, id: u64) {
-        self.flag.store(false, Ordering::SeqCst);
-        let mut cancelled = self.cancelled.lock().unwrap();
-        if cancelled.remove(&id) {
-            self.flag.store(true, Ordering::SeqCst);
+        let mut state = self.state.lock().unwrap();
+        let queue = state
+            .pending
+            .get_mut(&id)
+            .expect("scan registered before dispatch");
+        let cancelled = queue.pop_front().expect("queued scan");
+        if queue.is_empty() {
+            state.pending.remove(&id);
         }
-        *self.current.lock().unwrap() = Some(id);
+        state.current = Some(id);
+        self.flag.store(cancelled, Ordering::SeqCst);
     }
 
     fn cancel(&self, id: u64) {
-        // Lock in the same order as begin so a cancellation cannot fall
-        // between consuming a pending ID and publishing the active request.
-        let mut cancelled = self.cancelled.lock().unwrap();
-        let current = self.current.lock().unwrap();
-        if *current == Some(id) {
+        let mut state = self.state.lock().unwrap();
+        if state.current == Some(id) {
             self.flag.store(true, Ordering::SeqCst);
-        } else {
-            cancelled.insert(id);
+        } else if let Some(cancelled) = state.pending.get_mut(&id).and_then(|q| q.front_mut()) {
+            *cancelled = true;
         }
+        // Unknown/completed IDs are ignored, so a late cancellation cannot
+        // persist until an unrelated future reuse of that ID.
     }
 
     fn end(&self) {
-        *self.current.lock().unwrap() = None;
+        let mut state = self.state.lock().unwrap();
+        state.current = None;
         self.flag.store(false, Ordering::SeqCst);
     }
 }
@@ -221,6 +242,9 @@ fn run(config: Config) -> Result<(), String> {
         match read_message::<_, ClientMessage>(&mut input, reader_config.max_frame_bytes) {
             Ok(ClientMessage::Cancel { id }) => reader_control.cancel(id),
             Ok(message) => {
+                if let ClientMessage::Scan { id, .. } = &message {
+                    reader_control.queue(*id);
+                }
                 if sender.send(Ok(message)).is_err() {
                     break;
                 }
@@ -587,12 +611,15 @@ mod tests {
     #[test]
     fn control_cancels_only_the_matching_scan() {
         let control = Control::default();
+        control.queue(1);
         control.begin(1);
+        control.queue(2);
         control.cancel(2);
         assert!(!control.flag.load(Ordering::SeqCst));
         control.cancel(1);
         assert!(control.flag.load(Ordering::SeqCst));
         control.end();
+        control.queue(1);
         control.begin(1);
         assert!(!control.flag.load(Ordering::SeqCst));
         control.end();
@@ -602,6 +629,7 @@ mod tests {
             "pending cancel is kept"
         );
         control.end();
+        control.queue(2);
         control.begin(2);
         assert!(!control.flag.load(Ordering::SeqCst));
     }
@@ -610,13 +638,62 @@ mod tests {
 #[cfg(test)]
 mod control_tests {
     use super::*;
+
+    #[test]
+    fn late_or_unknown_cancel_is_not_saved_for_future_reuse() {
+        let control = Control::default();
+        control.queue(7);
+        control.begin(7);
+        control.end();
+        control.cancel(7);
+        for id in 100..10_000 {
+            control.cancel(id);
+        }
+        assert!(control.state.lock().unwrap().pending.is_empty());
+        control.queue(7);
+        control.begin(7);
+        assert!(!control.flag.load(Ordering::SeqCst));
+        control.end();
+    }
+
+    #[test]
+    fn queued_cancel_is_consumed_only_by_the_received_request() {
+        let control = Control::default();
+        control.queue(1);
+        control.begin(1);
+        control.queue(2);
+        control.cancel(2);
+        assert!(!control.flag.load(Ordering::SeqCst));
+        control.end();
+        control.begin(2);
+        assert!(control.flag.load(Ordering::SeqCst));
+        control.end();
+        control.cancel(2);
+        control.queue(2);
+        control.begin(2);
+        assert!(!control.flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn next_request_may_arrive_while_previous_result_is_being_delivered() {
+        let control = Control::default();
+        control.queue(7);
+        control.begin(7);
+        control.cancel(7);
+        control.queue(7);
+        control.end();
+        control.begin(7);
+        assert!(!control.flag.load(Ordering::SeqCst));
+    }
     #[test]
     fn active_cancel_does_not_cancel_a_later_reused_id() {
         let control = Control::default();
+        control.queue(7);
         control.begin(7);
         control.cancel(7);
         assert!(control.flag.load(Ordering::SeqCst));
         control.end();
+        control.queue(7);
         control.begin(7);
         assert!(
             !control.flag.load(Ordering::SeqCst),
@@ -640,9 +717,11 @@ mod control_tests {
         });
         let mut bad = false;
         for _ in 0..20000 {
+            control.queue(1);
             control.begin(1);
             gate.wait();
             control.end();
+            control.queue(2);
             control.begin(2);
             gate.wait();
             bad |= control.flag.load(Ordering::Relaxed);
