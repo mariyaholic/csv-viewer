@@ -173,10 +173,11 @@ impl Control {
         // persist until an unrelated future reuse of that ID.
     }
 
-    fn end(&self) {
+    fn end(&self) -> Option<String> {
         let mut state = self.state.lock().unwrap();
         state.current = None;
         self.flag.store(false, Ordering::SeqCst);
+        state.fatal.clone()
     }
 }
 
@@ -343,7 +344,7 @@ fn run(config: Config) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    finish_connection(&control, &mut output, config.max_frame_bytes)
 }
 
 enum WorkerError {
@@ -361,7 +362,16 @@ fn finish_scan(
     // Publish completion internally BEFORE the peer can observe its terminal
     // reply and reuse the ID. A cancel for a newly queued reuse then cannot
     // be consumed by the completed scan.
-    control.end();
+    if let Some(error) = control.end() {
+        send_error(
+            output,
+            None,
+            ErrorCode::BadRequest,
+            error.clone(),
+            max_frame_bytes,
+        )?;
+        return Err(error);
+    }
     let response = match result {
         Ok(response) => response,
         Err(WorkerError::Message(code, message)) => WorkerMessage::Error {
@@ -374,6 +384,24 @@ fn finish_scan(
     write_message(output, &response, max_frame_bytes)
         .map(|_| ())
         .map_err(|error| format!("cannot send scan result: {error}"))
+}
+
+fn finish_connection(
+    control: &Control,
+    output: &mut impl Write,
+    max_frame_bytes: usize,
+) -> Result<(), String> {
+    if let Some(error) = control.failure() {
+        send_error(
+            output,
+            None,
+            ErrorCode::BadRequest,
+            error.clone(),
+            max_frame_bytes,
+        )?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -634,17 +662,17 @@ mod tests {
         assert!(!control.flag.load(Ordering::SeqCst));
         control.cancel(1);
         assert!(control.flag.load(Ordering::SeqCst));
-        control.end();
+        let _ = control.end();
         control.queue(1);
         control.begin(1);
         assert!(!control.flag.load(Ordering::SeqCst));
-        control.end();
+        let _ = control.end();
         control.begin(2);
         assert!(
             control.flag.load(Ordering::SeqCst),
             "pending cancel is kept"
         );
-        control.end();
+        let _ = control.end();
         control.queue(2);
         control.begin(2);
         assert!(!control.flag.load(Ordering::SeqCst));
@@ -654,6 +682,50 @@ mod tests {
 #[cfg(test)]
 mod control_tests {
     use super::*;
+
+    #[test]
+    fn overflow_after_last_dequeue_is_reported_before_result_and_at_eof() {
+        let control = Arc::new(Control::default());
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        control.queue(7);
+        sender.send(()).unwrap();
+        // Simulate try_send observing Full, then being descheduled before it
+        // records overflow while the consumer dequeues the last item.
+        assert!(matches!(
+            sender.try_send(()),
+            Err(std::sync::mpsc::TrySendError::Full(_))
+        ));
+        receiver.recv().unwrap();
+        control.begin(7);
+        assert!(control.failure().is_none());
+        let other = control.clone();
+        let worker = thread::spawn(move || {
+            other.abort("injected pending queue overflow");
+            drop(sender);
+        });
+        worker.join().unwrap();
+        assert!(receiver.recv().is_err());
+        let mut bytes = Vec::new();
+        assert!(finish_scan(
+            &control,
+            7,
+            Err(WorkerError::Message(
+                ErrorCode::Io,
+                "incomplete scan".into()
+            )),
+            &mut bytes,
+            DEFAULT_MAX_FRAME
+        )
+        .is_err());
+        let reply: WorkerMessage =
+            read_message(&mut io::Cursor::new(bytes), DEFAULT_MAX_FRAME).unwrap();
+        assert!(
+            matches!(reply, WorkerMessage::Error { id: None, code: ErrorCode::BadRequest, message } if message.contains("queue overflow"))
+        );
+        // Overflow that arrives after a previous terminal reply is still
+        // checked when the receiver has closed without another queued item.
+        assert!(finish_connection(&control, &mut Vec::new(), DEFAULT_MAX_FRAME).is_err());
+    }
 
     #[test]
     fn request_flood_is_bounded_and_cancels_active_work() {
@@ -804,7 +876,7 @@ mod control_tests {
         let control = Control::default();
         control.queue(7);
         control.begin(7);
-        control.end();
+        let _ = control.end();
         control.cancel(7);
         for id in 100..10_000 {
             control.cancel(id);
@@ -813,7 +885,7 @@ mod control_tests {
         control.queue(7);
         control.begin(7);
         assert!(!control.flag.load(Ordering::SeqCst));
-        control.end();
+        let _ = control.end();
     }
 
     #[test]
@@ -824,10 +896,10 @@ mod control_tests {
         control.queue(2);
         control.cancel(2);
         assert!(!control.flag.load(Ordering::SeqCst));
-        control.end();
+        let _ = control.end();
         control.begin(2);
         assert!(control.flag.load(Ordering::SeqCst));
-        control.end();
+        let _ = control.end();
         control.cancel(2);
         control.queue(2);
         control.begin(2);
@@ -841,7 +913,7 @@ mod control_tests {
         control.begin(7);
         control.cancel(7);
         control.queue(7);
-        control.end();
+        let _ = control.end();
         control.begin(7);
         assert!(!control.flag.load(Ordering::SeqCst));
     }
@@ -852,14 +924,14 @@ mod control_tests {
         control.begin(7);
         control.cancel(7);
         assert!(control.flag.load(Ordering::SeqCst));
-        control.end();
+        let _ = control.end();
         control.queue(7);
         control.begin(7);
         assert!(
             !control.flag.load(Ordering::SeqCst),
             "active cancellation was retained for a new scan"
         );
-        control.end();
+        let _ = control.end();
     }
 
     #[test]
@@ -880,12 +952,12 @@ mod control_tests {
             control.queue(1);
             control.begin(1);
             gate.wait();
-            control.end();
+            let _ = control.end();
             control.queue(2);
             control.begin(2);
             gate.wait();
             bad |= control.flag.load(Ordering::Relaxed);
-            control.end();
+            let _ = control.end();
         }
         t.join().unwrap();
         assert!(!bad, "late cancel for request 1 must not cancel request 2");

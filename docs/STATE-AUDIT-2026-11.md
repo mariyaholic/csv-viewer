@@ -38,3 +38,9 @@ Overflow cancels active work and terminates with a clear protocol error rather
 than blocking the reader or allocating an unbounded queue. Pending cancellation
 state is bounded by received queued scans, plus at most the rejected enqueue.
 The existing per-frame cap still applies; this is not an exact process RSS cap.
+
+Overflow recorded before completion suppresses the scan result and sends a
+connection error; closure checks fatal state even when no queued item remains.
+Checked settings reject unknown keys and quote-only overrides (an explicit
+delimiter is required) rather than silently ignoring user choices. Legacy
+settings callers still receive fallback warnings; preview fails closed.
