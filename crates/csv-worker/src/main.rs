@@ -130,9 +130,14 @@ impl Control {
     }
 
     fn cancel(&self, id: u64) {
-        self.cancelled.lock().unwrap().insert(id);
-        if *self.current.lock().unwrap() == Some(id) {
+        // Lock in the same order as begin so a cancellation cannot fall
+        // between consuming a pending ID and publishing the active request.
+        let mut cancelled = self.cancelled.lock().unwrap();
+        let current = self.current.lock().unwrap();
+        if *current == Some(id) {
             self.flag.store(true, Ordering::SeqCst);
+        } else {
+            cancelled.insert(id);
         }
     }
 
@@ -589,12 +594,15 @@ mod tests {
         assert!(control.flag.load(Ordering::SeqCst));
         control.end();
         control.begin(1);
+        assert!(!control.flag.load(Ordering::SeqCst));
+        control.end();
+        control.begin(2);
         assert!(
             control.flag.load(Ordering::SeqCst),
             "pending cancel is kept"
         );
         control.end();
-        control.begin(1);
+        control.begin(2);
         assert!(!control.flag.load(Ordering::SeqCst));
     }
 }
@@ -602,6 +610,21 @@ mod tests {
 #[cfg(test)]
 mod control_tests {
     use super::*;
+    #[test]
+    fn active_cancel_does_not_cancel_a_later_reused_id() {
+        let control = Control::default();
+        control.begin(7);
+        control.cancel(7);
+        assert!(control.flag.load(Ordering::SeqCst));
+        control.end();
+        control.begin(7);
+        assert!(
+            !control.flag.load(Ordering::SeqCst),
+            "active cancellation was retained for a new scan"
+        );
+        control.end();
+    }
+
     #[test]
     fn cancelling_an_old_request_cannot_poison_the_next_request() {
         let control = Arc::new(Control::default());

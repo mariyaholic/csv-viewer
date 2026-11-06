@@ -223,8 +223,11 @@ refer to the named sibling repository.
   delayed polling, cancellation/child-publication contention, panic cleanup,
   parser quote precedence, scheduled DLL work, preview drop/scheduling failure,
   rejected/consumed Parquet streams and actual native preview reparenting.
-- The CSV request-ID handoff stress regression was added and passed without
-  changing its locking: its mutex-guard lifetime already protects the flag update.
+- The CSV request-ID handoff uses an explicit current-ID guard while setting the
+  cancellation flag. A temporary guard in the `if` condition did not cover the
+  body and could let an old cancellation affect the next request. Cancellation
+  of an active ID is consumed by that scan instead of poisoning a later reuse;
+  pre-cancellation of a different ID remains pending for that ID.
 - Scan/watchdog scheduling-failure transitions use injected I/O errors in unit
   tests; OS thread exhaustion is not forced on the host.
 - Existing workspace tests, explicit CSV worker integration, Linux/Windows GNU
