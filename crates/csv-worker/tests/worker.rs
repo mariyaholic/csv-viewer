@@ -321,3 +321,33 @@ fn read_stderr(mut child: Child) -> String {
     }
     stderr
 }
+
+#[test]
+fn late_cancel_before_id_reuse_does_not_cancel_the_next_scan() {
+    let spool = tempfile::tempdir().unwrap();
+    let mut worker = Worker::start(spool.path());
+    let source = write_spool(&spool, "reuse.csv", b"a,b\n1,2\n3,4\n");
+    for iteration in 0..100 {
+        worker.send(&ClientMessage::Cancel { id: 7 });
+        worker.send(&ClientMessage::Scan {
+            id: 7,
+            source: source.clone(),
+            request: full_request(),
+        });
+        assert_eq!(worker.receive(), WorkerMessage::Accepted { id: 7 });
+        loop {
+            match worker.receive() {
+                WorkerMessage::Progress { id: 7, .. } => {}
+                WorkerMessage::Result { id: 7, report } => {
+                    assert!(
+                        report.complete,
+                        "late cancellation affected reuse {iteration}"
+                    );
+                    break;
+                }
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+    }
+    worker.shutdown();
+}

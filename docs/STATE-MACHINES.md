@@ -107,7 +107,7 @@ refer to the named sibling repository.
 
 ### 19. CSV cancellation request handoff (CSV)
 
-- Transition/invariant: Pre-cancelled ID → begin/active cancellation → end; an old ID must not poison the next request.
+- Transition/invariant: Received/queued ID → begin/active cancellation → end; an old ID must not poison the next request.
 - Source/coverage: `crates/csv-worker/src/main.rs; control_tests`.
 
 ### 20. CSV spool session (CSV)
@@ -223,11 +223,11 @@ refer to the named sibling repository.
   delayed polling, cancellation/child-publication contention, panic cleanup,
   parser quote precedence, scheduled DLL work, preview drop/scheduling failure,
   rejected/consumed Parquet streams and actual native preview reparenting.
-- The CSV request-ID handoff uses an explicit current-ID guard while setting the
-  cancellation flag. A temporary guard in the `if` condition did not cover the
-  body and could let an old cancellation affect the next request. Cancellation
-  of an active ID is consumed by that scan instead of poisoning a later reuse;
-  pre-cancellation of a different ID remains pending for that ID.
+- CSV queue registration, begin, cancellation and end share one state lock.
+  Cancellation of an active ID is consumed by that scan. A cancellation for
+  an already queued scan is consumed once; unknown/completed IDs are ignored.
+  Clients must use distinct outstanding IDs and must not send stale cancels
+  after reusing an ID, because the wire protocol has no generation token.
 - Scan/watchdog scheduling-failure transitions use injected I/O errors in unit
   tests; OS thread exhaustion is not forced on the host.
 - Existing workspace tests, explicit CSV worker integration, Linux/Windows GNU

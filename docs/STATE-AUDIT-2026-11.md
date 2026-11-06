@@ -4,7 +4,7 @@ Base: `94b69e35baab64e018eb865443159b5355f2af12`. Existing app themes and assets
 
 ## Corrections
 
-Worker cancellation now holds the current-ID guard through the flag update, with the same cancelled/current lock order as begin. Active cancellation belongs to the active request and is not retained for a later reused ID. A different pre-cancelled ID is still consumed once. The regression distinguishes those states.
+Worker cancellation now serializes queue registration, begin, cancel and end under one mutex. Only scan requests already received by the reader can retain a pending cancellation. Active cancellation belongs to the current scan; late/unknown IDs are ignored rather than remembered for future reuse. Pending cancellation is consumed by the queued request once. Regression tests cover queued cancellation, completed-ID reuse, result-delivery overlap and concurrent handoffs.
 
 Supervisor cancellation remains nonblocking. Two process tests now wait for the background child owner and operation-slot cleanup before releasing their shared test mutex, preventing a later test from observing unfinished cleanup. Production supervisor behavior is unchanged. The same test correction is mirrored to the sibling Parquet repository.
 
@@ -16,4 +16,4 @@ Formatting, offline documentation generation, six documentation tests, 18 design
 
 ## Protocol limits
 
-Distinct outstanding requests must not reuse an ID: cancellation messages cannot distinguish two simultaneous requests with the same ID. This correction removes active-cancel retention and stale-ID cross-cancellation; it does not redesign request identity or prove all scheduling interleavings. No merge, release or deployment is performed.
+Clients must use distinct IDs for outstanding requests and must not send stale cancellations after reusing an ID: cancellation messages cannot distinguish two simultaneous requests with the same ID. Sequential reuse after completion is supported, and cancels received before the replacement request are ignored; it does not redesign request identity or prove all scheduling interleavings. No merge, release or deployment is performed.
