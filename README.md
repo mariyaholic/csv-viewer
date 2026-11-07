@@ -8,6 +8,13 @@ Made by Maria
 - [Documentation index](docs/README.md) — user help, developer references and Windows acceptance.
 - In the app, choose **Help** for topics or the bundled offline guide; **F1** opens Quick help.
 
+## Release preparation
+
+The first planned public beta is the standalone Windows x64 desktop only.
+No public release is available yet. The [release checklist](docs/RELEASE-CHECKLIST.md)
+tracks the remaining clean-machine, accessibility, privacy and distribution gates.
+Explorer integration stays a separate opt-in developer feature.
+
 ## Standalone desktop preview
 
 A native Windows desktop companion is now implemented with **Paper, Ink, PC-98,
