@@ -1,5 +1,10 @@
 name: CI
-on: [push, pull_request]
+# One validation run per PR; branch pushes no longer duplicate PR runs.
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  pull_request:
 permissions:
   contents: read
 jobs:
@@ -14,6 +19,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@cfcaf53ba4c621917ec7f78a66bff7a8848ddad4 # 1.85.0
         with:
           toolchain: 1.85.0
+      - run: python3 -m unittest discover -s tools -p 'test_packaging.py'
       - run: python3 tools/build_docs.py --check
       - run: python3 -m unittest discover -s tools -p 'test_docs.py'
       - run: python3 tools/validate_design.py
@@ -64,6 +70,34 @@ jobs:
           & target/native-smoke.exe 'target\debug\csv-desktop.exe' 'target\pages.csv' CSV target '000000' '--browse'
           if ($LASTEXITCODE -ne 0) { throw "Native paging/search smoke failed" }
 
+      - name: Verify extracted standalone ZIP
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          python -m unittest discover -s tools -p 'test_packaging.py'
+          if ($LASTEXITCODE -ne 0) { throw "Packaging regression tests failed" }
+          $parseErrors = $null
+          $tokens = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'scripts/build-desktop.ps1'), [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors) { throw "PowerShell package builder has syntax errors: $parseErrors" }
+          ./scripts/test-rust-build-flags.ps1
+          cargo fetch --locked
+          if ($LASTEXITCODE -ne 0) { throw "Locked dependency fetch failed" }
+          python scripts/generate-third-party-licenses.py --check
+          if ($LASTEXITCODE -ne 0) { throw "Third-party licence bundle is stale" }
+          python scripts/package-desktop.py --binary-dir target/debug --output-dir target/preview-package --profile debug --commit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Packaging failed" }
+          $archive = 'target/preview-package/csv-desktop-debug-windows-x64-msvc.zip'
+          python scripts/package-desktop.py --verify $archive
+          if ($LASTEXITCODE -ne 0) { throw "Packaged checksums failed" }
+          $extracted = Join-Path $env:RUNNER_TEMP 'CSV standalone with spaces'
+          Expand-Archive -LiteralPath $archive -DestinationPath $extracted
+          $desktop = Join-Path $extracted 'csv-desktop.exe'
+          & target/native-smoke.exe $desktop 'crates/csv-core/tests/fixtures/golden.csv' CSV target '007'
+          if ($LASTEXITCODE -ne 0) { throw "Extracted standalone smoke failed" }
+          & target/native-smoke.exe $desktop 'target/pages.csv' CSV target '000000' '--browse'
+          if ($LASTEXITCODE -ne 0) { throw "Extracted paging/search smoke failed" }
+
   # cargo-deny-action is container-based and only runs on Linux (proven by
   # the mh-ticker first CI run, run 41384343756: "Container action is only
   # supported on Linux"); it gets its own job instead of riding the Windows
@@ -77,37 +111,31 @@ jobs:
         with:
           command: check licenses bans
 
-  # Tagged releases only (Manager ruling for 07A-13 open question 2: no
-  # manual dispatch). The build script writes dist/ binaries plus SHA256SUMS.
-  release:
+  # A tag stages a candidate only. Publishing/visibility need separate approval.
+  release-candidate:
     if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows, deny]
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@cfcaf53ba4c621917ec7f78a66bff7a8848ddad4 # 1.85.0
         with:
           toolchain: 1.85.0
-      - name: Fetch dependencies for the offline licence check
-        run: cargo fetch --locked
       - name: Add Windows SDK resource compiler
         shell: pwsh
         run: |
           $compiler = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe" | Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $compiler) { throw "Windows SDK rc.exe was not found" }
           $compiler.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Build the Windows artefacts
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1
-      - name: Attach the release assets
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+      - name: Build standalone MSVC candidate
+        shell: pwsh
+        run: ./scripts/build-desktop.ps1
+      - name: Keep candidate for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          files: |
-            dist/csv-viewer.exe
-            dist/csv-worker.exe
-            dist/csv_preview.dll
-            dist/LICENSE
-            dist/NOTICE
-            dist/THIRD_PARTY.md
-            dist/THIRD_PARTY_LICENSES.txt
-            dist/SHA256SUMS
+          name: csv-desktop-windows-x64-msvc-candidate
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/csv-desktop-release-windows-x64-msvc.zip
+            dist/csv-desktop-release-windows-x64-msvc.zip.sha256

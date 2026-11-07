@@ -125,8 +125,8 @@ GNU-built binaries:
 | winpthreads | MinGW-w64 14.0.0 | MIT | statically linked (no DLL import) |
 | libgcc / GCC runtime glue | GCC (winlibs GCC 16.2.0) | GPL-3.0-or-later WITH GCC Runtime Library Exception | statically linked; the exception covers distributing binaries built with it |
 
-The shipped Windows releases use `scripts/build-windows.ps1` (MSVC, the CI
-release job), so a shipped release contains none of the components above; the
+The planned standalone beta uses `scripts/build-desktop.ps1` (MSVC), so its
+candidate payload is not built with the GNU components above; the
 GNU path is the documented Linux cross-compile convenience. Note on the GPL
 line: the GCC runtime exception is what makes static libgcc redistributable,
 unlike the GPL-only code this project otherwise excludes. Upstream licence
@@ -136,7 +136,9 @@ texts, like everything in this inventory, must be re-checked before a release.
 
 Both build scripts copy `LICENSE`, `NOTICE`, `THIRD_PARTY.md` and
 `THIRD_PARTY_LICENSES.txt` into `dist/` and include them in `SHA256SUMS`.
-The tag workflow attaches those documents as release assets alongside the binaries.
+The tag workflow now stages a review-only standalone MSVC ZIP with these documents,
+font/OFL files and offline help. It does not publish a GitHub Release.
+See [the release checklist](docs/RELEASE-CHECKLIST.md).
 Regenerate the committed Cargo licence texts after a lockfile change with
 `python3 scripts/generate-third-party-licenses.py`; verify with `--check`.
 On Windows use `python` instead of `python3`. Python 3 is a build-time
