@@ -825,7 +825,12 @@ impl MarshalledReader {
 impl Read for MarshalledReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.stream.is_none() {
-            self.stream = Some(unsafe { unmarshal_stream(self.marshalled.0) }?);
+            // The marshalled reference is consumed by this attempt: either
+            // unmarshal_stream releases it on failure, or COM consumes it on
+            // success. Clear the reader's copy first so Drop cannot release
+            // the same reference a second time.
+            let marshalled = std::mem::replace(&mut self.marshalled.0, ptr::null_mut());
+            self.stream = Some(unsafe { unmarshal_stream(marshalled) }?);
         }
         self.stream
             .as_mut()
@@ -836,10 +841,11 @@ impl Read for MarshalledReader {
 
 impl Drop for MarshalledReader {
     fn drop(&mut self) {
-        if self.stream.is_none() {
+        let marshalled = std::mem::replace(&mut self.marshalled.0, ptr::null_mut());
+        if !marshalled.is_null() {
             // Never unmarshalled (for example the session was cancelled before
             // the first read); release the marshalled stream directly.
-            unsafe { stream_release(self.marshalled.0) };
+            unsafe { stream_release(marshalled) }
         }
     }
 }
