@@ -830,6 +830,13 @@ impl Read for MarshalledReader {
             // success. Clear the reader's copy first so Drop cannot release
             // the same reference a second time.
             let marshalled = std::mem::replace(&mut self.marshalled.0, ptr::null_mut());
+            if marshalled.is_null() {
+                // A previous attempt already consumed the reference and failed;
+                // there is nothing left to unmarshal.
+                return Err(io::Error::other(
+                    "the marshalled stream was already consumed by an earlier failed read",
+                ));
+            }
             self.stream = Some(unsafe { unmarshal_stream(marshalled) }?);
         }
         self.stream
@@ -2825,6 +2832,21 @@ mod tests {
     #[link(name = "shlwapi")]
     extern "system" {
         fn SHCreateMemStream(init: *const u8, size: u32) -> *mut c_void;
+    }
+
+    /// A reader whose marshalled reference was already consumed (a failed first
+    /// read) must fail cleanly on retry and must not release anything on drop.
+    #[test]
+    fn a_consumed_marshalled_reader_fails_cleanly_and_drops_safely() {
+        use std::io::Read;
+        let mut reader = MarshalledReader {
+            marshalled: SendPtr(ptr::null_mut()),
+            stream: None,
+        };
+        let mut byte = [0u8; 1];
+        assert!(reader.read(&mut byte).is_err());
+        assert!(reader.read(&mut byte).is_err());
+        drop(reader);
     }
 
     /// The marshalling contract the fixed preview path relies on: a host stream

@@ -321,6 +321,38 @@ mod tests {
     }
 
     #[test]
+    fn sanitizes_unavailable_date_range_column_names() {
+        // A partial scan renders the "unavailable" branch of the date-range
+        // line; hostile control and bidi characters must be neutralised there.
+        let mut request = ScanRequest::full();
+        request.header = HeaderChoice::Present;
+        request.date_ranges = vec![DateRangeRequest {
+            column: 0,
+            format: crate::types::DateFormat::Ymd,
+        }];
+        let report = scan(
+            io::Cursor::new(
+                "\u{1b}]0;pwn\u{7}\u{202e}evil,value\n2024-01-02,3\n"
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            InputInfo::known(40),
+            &request,
+        )
+        .unwrap();
+        let mut report = report;
+        for range in &mut report.date_ranges {
+            range.status = crate::model::DateRangeStatus::Unavailable;
+            range.reason = Some("a complete scan is required".to_string());
+        }
+        let text = render_text(&report, 80, 10);
+        assert!(text.contains("Date range:"), "line must render: {text:?}");
+        assert!(!text.contains('\u{1b}'), "raw ESC leaked: {text:?}");
+        assert!(!text.contains('\u{7}'), "raw BEL leaked: {text:?}");
+        assert!(!text.contains('\u{202e}'), "bidi override leaked: {text:?}");
+    }
+
+    #[test]
     fn truncates_to_display_width() {
         assert_eq!(truncate_display("abcdef", 3).0, "ab…");
         assert_eq!(truncate_display("abc", 3).0, "abc");
