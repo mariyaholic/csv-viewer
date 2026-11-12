@@ -137,7 +137,7 @@ pub fn render_text(report: &ScanReport, width: usize, max_rows: usize) -> String
                 crate::model::DateRangeStatus::Computed => {
                     lines.push(format!(
                         "Date range: {} ({}) = {} .. {}; {} parsed, {} invalid, {} missing",
-                        range.column_name.as_deref().unwrap_or("column ?"),
+                        sanitize_display(range.column_name.as_deref().unwrap_or("column ?")),
                         range.format.description(),
                         range.min.as_deref().unwrap_or("?"),
                         range.max.as_deref().unwrap_or("?"),
@@ -149,7 +149,7 @@ pub fn render_text(report: &ScanReport, width: usize, max_rows: usize) -> String
                 crate::model::DateRangeStatus::Unavailable => {
                     lines.push(format!(
                         "Date range: {} — unavailable: {}",
-                        range.column_name.as_deref().unwrap_or("column ?"),
+                        sanitize_display(range.column_name.as_deref().unwrap_or("column ?")),
                         range.reason.as_deref().unwrap_or("not available")
                     ));
                 }
@@ -293,6 +293,63 @@ mod tests {
         assert!(!rendered.contains('\u{1b}'));
         assert!(rendered.contains("\\n"));
         assert!(rendered.contains("\\t"));
+    }
+
+    #[test]
+    fn sanitizes_date_range_column_names() {
+        let mut request = ScanRequest::full();
+        request.header = HeaderChoice::Present;
+        request.date_ranges = vec![DateRangeRequest {
+            column: 0,
+            format: crate::types::DateFormat::Ymd,
+        }];
+        let report = scan(
+            io::Cursor::new(b"\x1b[31mred,value\n2024-01-02,3\n".to_vec()),
+            InputInfo::known(30),
+            &request,
+        )
+        .unwrap();
+        let text = render_text(&report, 80, 10);
+        assert!(
+            text.contains("Date range:"),
+            "date-range lines must render: {text}"
+        );
+        assert!(
+            !text.contains('\u{1b}'),
+            "rendered page must not carry a raw ESC byte: {text:?}"
+        );
+    }
+
+    #[test]
+    fn sanitizes_unavailable_date_range_column_names() {
+        // A partial scan renders the "unavailable" branch of the date-range
+        // line; hostile control and bidi characters must be neutralised there.
+        let mut request = ScanRequest::full();
+        request.header = HeaderChoice::Present;
+        request.date_ranges = vec![DateRangeRequest {
+            column: 0,
+            format: crate::types::DateFormat::Ymd,
+        }];
+        let report = scan(
+            io::Cursor::new(
+                "\u{1b}]0;pwn\u{7}\u{202e}evil,value\n2024-01-02,3\n"
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            InputInfo::known(40),
+            &request,
+        )
+        .unwrap();
+        let mut report = report;
+        for range in &mut report.date_ranges {
+            range.status = crate::model::DateRangeStatus::Unavailable;
+            range.reason = Some("a complete scan is required".to_string());
+        }
+        let text = render_text(&report, 80, 10);
+        assert!(text.contains("Date range:"), "line must render: {text:?}");
+        assert!(!text.contains('\u{1b}'), "raw ESC leaked: {text:?}");
+        assert!(!text.contains('\u{7}'), "raw BEL leaked: {text:?}");
+        assert!(!text.contains('\u{202e}'), "bidi override leaked: {text:?}");
     }
 
     #[test]
