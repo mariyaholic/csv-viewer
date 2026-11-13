@@ -10,3 +10,4 @@ opencode.json
 
 # Python design-tool caches
 __pycache__/
+.progress.md
