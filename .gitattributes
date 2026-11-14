@@ -12,3 +12,4 @@ crates/csv-core/tests/fixtures/** -text
 crates/viewer-shell/** text eol=lf
 design/system/*.json text eol=lf
 *.ttf binary
+scripts/agent/* text eol=lf
