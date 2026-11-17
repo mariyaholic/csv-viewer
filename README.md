@@ -10,9 +10,9 @@ Made by Maria
 
 ## Standalone desktop preview
 
-A native Windows desktop companion is now implemented with **Paper, Ink, PC-98,
+I also built a native Windows desktop companion, dressed in **Paper, Ink, PC-98,
 Doloris, Sumimi and Marigold** themes. Extract its portable developer ZIP and run
-`csv-desktop.exe`; no COM registration is needed. This is a bounded, read-only
+`csv-desktop.exe`; no COM registration is needed. It is a bounded, read-only
 paged browser with cross-page literal search, not an editable spreadsheet.
 [Large-file browsing and search limits](docs/LARGE-FILE-BROWSING.md).
 
@@ -22,7 +22,10 @@ paged browser with cross-page literal search, not an editable spreadsheet.
 
 
 
-Inspect a CSV in Explorer or a standalone window with an explicit account of parsing and scan coverage.
+Hello! This is my CSV viewer. It inspects a CSV in Explorer or a standalone
+window, and it always gives you an explicit account of parsing and scan coverage.
+I like that it never pretends to know more than it read, and I hope it helps you
+look at your files as much as it helps me.
 
 This is free and open source (Apache-2.0). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
@@ -40,8 +43,8 @@ Windows binaries are not code-signed yet; Windows SmartScreen may warn when they
   versioned and length-prefixed with a bounded frame size. Worker and request
   limits cap records, bytes and time.
 - **Fast first screen, explicit full scan:** the handler keeps a bounded head
-  (256 KiB) for the first preview. A full scan is only run when the user asks
-  for it (F in the preview window, `--full` or `f` in the viewer).
+  (256 KiB) for the first preview. A full scan only runs when you ask for it (F
+  in the preview window, `--full` or `f` in the viewer).
 - **Honest coverage:** a partial scan reports scanned records, bytes read and
   an incomplete reason. It never reports an exact total. Only a complete scan
   sets `total_records`.
@@ -110,6 +113,8 @@ not put any in them.
 
 ## Limits and behaviour
 
+I would rather tell you every limit up front:
+
 - Preview head: 256 KiB, 200 rows by default; preview cell text is capped at
   1 MiB per report so the worker frame stays bounded.
 - Full scan: 100,000,000 records, 4 GiB source, 120 s by default; fields are
@@ -154,3 +159,5 @@ produce the viewer, worker, DLL and SHA256SUMS in `dist/`; set `DIST_DIR` for
 the shell script to choose another output directory. They use the last commit
 timestamp for `SOURCE_DATE_EPOCH` and remap source paths. Verify reproducibility
 with the same toolchain, dependencies, source and environment.
+
+Thank you for reading. ♡
