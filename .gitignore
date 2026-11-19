@@ -11,3 +11,4 @@ opencode.json
 # Python design-tool caches
 __pycache__/
 .progress.md
+.ferry_lacus_cache/
